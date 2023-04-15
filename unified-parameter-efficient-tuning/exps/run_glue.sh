@@ -55,14 +55,16 @@ seed=42
 attn_mode="prefix"
 attn_option="concat"
 attn_composition="add"
-attn_bn=200  # attn bottleneck dim
+attn_bn=20  # attn bottleneck dim
+#attn_bn=200  # attn bottleneck dim
 
 ffn_mode="none"
 ffn_option="parallel"
 ffn_adapter_layernorm_option="none"
 ffn_adapter_init_option="lora"
 ffn_adapter_scalar="4"
-ffn_bn=512 # ffn bottleneck dim
+#ffn_bn=512 # ffn bottleneck dim
+ffn_bn=16 # ffn bottleneck dim
 
 
 
@@ -111,7 +113,8 @@ max_grad_norm=1
 # lr=1e-5
 # weight_decay=0
 weight_decay=0.1
-warmup_updates=0
+#warmup_updates=0
+warmup_updates=1
 warmup_ratio=0.06
 max_steps=-1
 num_train_epochs=10
@@ -130,6 +133,7 @@ save_steps=5000
 extra_cmd=""
 debug_str=""
 
+"""
 if [ "${debug}" = 1 ];
 then
     weight_decay=0
@@ -142,6 +146,25 @@ then
     max_steps=-1
     eval_strategy='steps'
     save_steps=100
+    report_to="none"
+    logging_steps=10
+    extra_cmd="--max_train_samples ${max_train_samples} --max_predict_samples 150"
+    debug_str=".debug"
+fi
+"""
+
+if [ "${debug}" = 1 ];
+then
+    weight_decay=0.1
+    max_grad_norm=1
+    max_train_samples=10
+    max_eval_samples=10
+    bsz=2 # batch-size
+    gradient_steps=1
+    num_train_epochs=1
+    max_steps=-1
+    eval_strategy='steps'
+    save_steps=10
     report_to="none"
     logging_steps=10
     extra_cmd="--max_train_samples ${max_train_samples} --max_predict_samples 150"
@@ -279,4 +302,15 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --ddp_find_unused_parameter "False" \
     --output_dir ${SAVE} ${extra_cmd} \
         2>&1 | tee ${SAVE}/log.txt
+
+#echo "Now we start saving"
+#echo $PWD
+#echo $(ls)
+#gsutil cp -r ./unified-parameter-efficient-tuning/checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
+# done
+
+echo "Now we start saving"
+echo $PWD
+echo $(ls)
+gsutil cp -r ./checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
 # done
