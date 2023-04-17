@@ -286,6 +286,7 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --warmup_steps ${warmup_updates} \
     --warmup_ratio ${warmup_ratio} \
     --max_seq_length ${max_seq_length} \
+    --fp16 \
     --logging_steps ${logging_steps} \
     --save_total_limit 2 \
     --evaluation_strategy ${eval_strategy} \
@@ -303,14 +304,9 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --output_dir ${SAVE} ${extra_cmd} \
         2>&1 | tee ${SAVE}/log.txt
 
+
 #echo "Now we start saving"
 #echo $PWD
 #echo $(ls)
-#gsutil cp -r ./unified-parameter-efficient-tuning/checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
-# done
-
-echo "Now we start saving"
-echo $PWD
-echo $(ls)
-gsutil cp -r ./checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
+#gsutil cp -r ./checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
 # done
