@@ -62,7 +62,7 @@ fi
 debug=0  # OK
 
 # set to "wandb" to use weights & bias
-report_to="wandb" # todo: it was none, but adapters include biases -> tbd Alexandra
+report_to="none" # this is just a visualization tool
 
 bsz=32  # ADJUSTED (from He et al., sents -> automatically sents? Houlsby also uses 32 batch size)
 gradient_steps=1 # todo: what does it mean?
