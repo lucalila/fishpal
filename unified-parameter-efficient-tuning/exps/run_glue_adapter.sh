@@ -186,7 +186,7 @@ python -u examples/pytorch/text-classification/run_glue.py \
         2>&1 | tee ${SAVE}/log.txt
 
 # persist results on cloud bucket
-echo "Now we start saving"
-echo $PWD
-gsutil cp -r ./checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
+#echo "Now we start saving"
+#echo $PWD
+#gsutil cp -r ./checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
 # done
