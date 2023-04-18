@@ -166,7 +166,7 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --weight_decay ${weight_decay} \
     --warmup_steps ${warmup_updates} \
     --warmup_ratio ${warmup_ratio} \
-    --max_seq_length ${max_seq_length} \  # todo: duplicate, above it is hard coded
+    --max_seq_length ${max_seq_length} \
     --fp16 \
     --logging_steps ${logging_steps} \
     --save_total_limit 2 \
