@@ -247,7 +247,7 @@ rm checkpoints/hf_model/*.lock
 #    --output_dir ${SAVE} ${extra_cmd} \
 #        2>&1 | tee ${SAVE}/log.txt
 
-python -u examples/pytorch/text-classification/run_glue.py \
+python3 -u examples/pytorch/text-classification/run_glue.py \
     --model_name_or_path roberta-base \
     --task_name $TASK_NAME \
     --do_train \
