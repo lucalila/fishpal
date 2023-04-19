@@ -64,7 +64,7 @@ debug=0  # OK
 # set to "wandb" to use weights & bias
 report_to="none" # this is just a visualization tool
 
-bsz=16  # ADJUSTED (from He et al., sents -> automatically sents? Houlsby also uses 32 batch size)
+bsz=8  # ADJUSTED (from He et al., sents -> automatically sents? Houlsby also uses 32 batch size)
 gradient_steps=1 # todo: what does it mean?
 
 lr=1e-4 # todo: lr is from He et al., Pfeiffer: 1e-4; Houlsby uses: 3e-4
