@@ -72,12 +72,12 @@ fi
 debug=0  # OK
 
 # set to "wandb" to use weights & bias
-report_to="wandb" # todo: it was none, but adapters include biases -> tbd Alexandra
+report_to="none" # default was none
 
-bsz=32  # OK (from He et al. 32 sents -> automatically sents? Houlsby also uses 32 batch size)
+bsz=2  # OK (from He et al. 32 sents -> automatically sents? Houlsby also uses 32 batch size)
 gradient_steps=1 # todo: what does it mean?
 
-lr=1e-4 # todo: lr is from He et al., Pfeiffer: 1e-4; Houlsby uses: 3e-4
+lr=1e-4 # todo: lr is from He et al., Pfeiffer: 1e-4; Houlsby uses: 3e-4, maybe I have to increase it
 max_grad_norm=1  # OK (this is the default from huggingface)
 weight_decay=0.1  # OK (this is the RoBERTa default)
 warmup_updates=0  # OK (this is the default)
@@ -175,7 +175,7 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --weight_decay ${weight_decay} \
     --warmup_steps ${warmup_updates} \
     --warmup_ratio ${warmup_ratio} \
-    --max_seq_length ${max_seq_length} \  # todo: duplicate, above it is hard coded
+    --max_seq_length ${max_seq_length} \
     --fp16 \
     --logging_steps ${logging_steps} \
     --save_total_limit 2 \
@@ -195,7 +195,7 @@ python -u examples/pytorch/text-classification/run_glue.py \
         2>&1 | tee ${SAVE}/log.txt
 
 # persist results on cloud bucket
-echo "Now we start saving"
-echo $PWD
-gsutil cp -r ./checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
+#echo "Now we start saving"
+#echo $PWD
+#gsutil cp -r ./checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
 # done
