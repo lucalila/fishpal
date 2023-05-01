@@ -42,12 +42,12 @@ attn_option="sequential"  # OK
 attn_composition="add"  # OK
 attn_bn=200  # attn bottleneck dim
 
-ffn_mode="adapter"  # OK
-ffn_option="sequential"  # OK
-ffn_adapter_layernorm_option="none"  # OK
-ffn_adapter_init_option="bert"  # OK
-ffn_adapter_scalar="1"  # OK
-ffn_bn=200 # ffn bottleneck dim  # OK
+#ffn_mode="adapter"  # OK
+#ffn_option="sequential"  # OK
+#ffn_adapter_layernorm_option="none"  # OK
+#ffn_adapter_init_option="bert"  # OK
+#ffn_adapter_scalar="1"  # OK
+#ffn_bn=200 # ffn bottleneck dim  # OK
 
 # lora params are not set
 if [ -z ${lora_alpha+x} ];
@@ -64,7 +64,7 @@ debug=0  # OK
 # set to "wandb" to use weights & bias
 report_to="none" # this is just a visualization tool
 
-bsz=32  # ADJUSTED (from He et al., sents -> automatically sents? Houlsby also uses 32 batch size)
+bsz=2  # ADJUSTED (from He et al., sents -> automatically sents? Houlsby also uses 32 batch size)
 gradient_steps=1 # todo: what does it mean?
 
 lr=1e-4 # todo: lr is from He et al., Pfeiffer: 1e-4; Houlsby uses: 3e-4
