@@ -47,13 +47,13 @@ debug=0  # OK  #todo: set to 1 for trials
 # set to "wandb" to use weights & bias
 report_to="none" # this is just a visualization tool
 
-bsz=2  # 2 for lmu gpus, orig 16
+bsz=16  # 2 for lmu gpus, orig 16
 gradient_steps=1
 
 
 model="roberta-base" # todo: roberta-base
 lr=1e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4
-num_train_epochs=10 # todo: 50 for unipelt (7 in fish paper; 10 from He et al.)
+num_train_epochs=50 # todo: 50 for unipelt (7 in fish paper; 10 from He et al.)
 max_seq_length=128
 
 max_grad_norm=1  # OK (this is the default from huggingface)
