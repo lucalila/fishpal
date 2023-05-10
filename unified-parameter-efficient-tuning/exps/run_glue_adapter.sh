@@ -90,9 +90,9 @@ drop_first_adapter_layers=0
 drop_first_prefix_layers_enc=0
 drop_first_prefix_layers_dec=0
 drop_first_prefix_layers_cross=0
-add_adapter_gate=True
-add_prefix_gate=True
-add_lora_gate=True
+add_adapter_gate=False  # ONLY ADAPTER BASELINE HERE
+add_prefix_gate=False  # ONLY ADAPTER BASELINE HERE
+add_lora_gate=False  # ONLY ADAPTER BASELINE HERE
 add_central_gate=False
 # set to True for adapters -> what about the bottleneck dim? -> check model.config.adapters
 train_adapter=True  # ONLY ADAPTER BASELINE HERE
@@ -133,7 +133,9 @@ then
 fi
 
 exp_name=glue.${TASK_NAME}.model_${model}.pre_${add_enc_prefix}.lora_${add_lora}.adap_${train_adapter}
+exp_name+=.preg_${add_prefix_gate}.lorag_${add_lora_gate}.adapg_${add_adapter_gate}
 exp_name+=.adapc_${adapter_config}.bsz_${bsz}.epoch_${num_train_epochs}.lr_${lr}
+
 #exp_name+=.fl_${ffn_adapter_layernorm_option}.finit_${ffn_adapter_init_option}
 #exp_name+=.fs_${ffn_adapter_scalar}.unfrz_${unfreeze}.ne${num_train_epochs}
 exp_name+=.seed_${seed}.${debug_str}
