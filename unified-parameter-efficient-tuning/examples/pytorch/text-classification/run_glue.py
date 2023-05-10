@@ -15,6 +15,7 @@
 # limitations under the License.
 """ Finetuning the library models for sequence classification on GLUE."""
 # You can also adapt this script on your own text classification task. Pointers for this are left as comments.
+##TODO: modified run_glue.py file for combination of petl and sparse updates from fish paper, plus unipelt
 
 import logging
 import os
@@ -22,39 +23,51 @@ import random
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
+import json # Todo: new import from other script, may not be relevant
 
 import numpy as np
 from datasets import load_dataset, load_metric
 
 import transformers
 from transformers import (
+    AdapterConfig,  # todo: added from unipelt, added adapter folder to src/transformers
     AutoConfig,
     AutoModelForSequenceClassification,
     AutoTokenizer,
     DataCollatorWithPadding,
     EvalPrediction,
     HfArgumentParser,
+    #MultiLingAdapterArguments,  # todo: added from unipelt
     PretrainedConfig,
     Trainer,
     TrainingArguments,
     default_data_collator,
     set_seed,
 )
-from transformers.trainer_utils import get_last_checkpoint
+from transformers.trainer_utils import get_last_checkpoint, is_main_process
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
+import torch  # todo: from fish
+from torch.utils.data import DataLoader  # todo: from fish
 
+"""
 from petl.options import (
     GenerationArguments,
     TuneArguments,
+    SparseUpdateTrainingArguments,  # todo: added newly into the petl.options file
+    AdapterArguments,          # todo: added from unipelt & added newly into the petl.options file
+    MultiLingAdapterArguments  # todo: added from unipelt & added newly into the petl.options file
 )
+
 from petl.petl_enc_model import PETLEncModel
 from petl.dynamic_batching import DynamicBatchingDataset
+"""
 
-
+# todo: new trainer class -> not needed as my fallback is the default trainer
+#from custom_trainer import GLUETrainer
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-check_min_version("4.9.0.dev0")
+from utils import freeze_params, choose_gpu, freeze_params_by_layers  # todo: added from unipelt, also added utils.py to repo
 
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/text-classification/requirements.txt")
 
@@ -72,6 +85,373 @@ task_to_keys = {
 
 logger = logging.getLogger(__name__)
 
+#TODO#### BEGIN OF INSERTION ###########
+
+# Todo: Difference between this one and below is based on the number of labels: If small nb of labels, the first one
+#  can be used, otherwise use the second one. For sst-2 the first one can be used.
+def calculate_the_importance_label(model, data_loader, num_samples, cuda_device, grad_type):
+    """
+    Args:
+        grad_type: (square or absolute)
+    """
+    gradients_dict = {}
+
+    for name, param in model.named_parameters():
+        # create a gradient dictionary with 0s only for all model parameter tensors
+        if "adapter" in name:
+            gradients_dict[name] = torch.zeros_like(param).to(cuda_device)
+            # todo: added this here
+            #print(name)
+    # choose the calculation method
+    if grad_type == "absolute":
+        grad_method = torch.abs
+    elif grad_type == "square":
+        grad_method = torch.square
+
+    # select a subset of the training data, according to the hyperparameter
+    for idx, inputs in enumerate(data_loader):
+        if idx >= num_samples:
+            break
+
+        # print(idx)
+
+        inputs.pop("idx", None)
+        for k, v in inputs.items():
+            if isinstance(v, torch.Tensor):
+                inputs[k] = v.to(cuda_device)
+
+        # From the paper: A given entry in F_weights relates to the average of the square gradient of the model’s
+        # output with respect to a given parameter.
+
+        # get the model output (logits + loss)
+        return_dicts = model(**inputs)
+        #print(return_dicts)  # todo: added this here
+        # extract the loss
+        loss = return_dicts["loss"]
+
+        # calculate the gradients
+        loss.backward()
+
+        for name, param in model.named_parameters():
+            # grad method is either square or absolute
+            # add the squared value of each model param to the gradients dict (which is initialized by 0)
+            if "adapter" in name: # todo: workaround for adapters
+                #print(name)  # todo: added this here
+                #print(param)
+                #print(param.grad)  # todo: this one is None -> not anymore, requires_grad is true for adapter layers
+
+                # calculate the square of the gradients
+                gradients_dict[name] += grad_method(param.grad).data
+
+        # set the gradients to zero
+        model.zero_grad()
+    # return the dict of the squares of the gradients
+    return gradients_dict
+
+
+def calculate_the_importance_expect(model, data_loader, num_samples, cuda_device, grad_type):
+    """
+    Args:
+        grad_type: (square or absolute)
+    """
+    gradients_dict = {}
+
+    for name, param in model.named_parameters():
+        gradients_dict[name] = torch.zeros_like(param).to(cuda_device)
+
+    if grad_type == "absolute":
+        grad_method = torch.abs
+    elif grad_type == "square":
+        grad_method = torch.square
+
+    for idx, inputs in enumerate(data_loader):
+        if idx >= num_samples:
+            break
+
+        # print(idx)
+
+        inputs.pop("idx", None)
+        for k, v in inputs.items():
+            if isinstance(v, torch.Tensor):
+                inputs[k] = v.to(cuda_device)
+
+        return_dicts = model(**inputs)
+
+        logits = return_dicts["logits"]
+
+        log_probs = torch.nn.functional.log_softmax(logits, -1)
+        probs = torch.nn.functional.softmax(logits, -1)
+
+        for b in range(logits.shape[0]):
+            for i in range(logits.shape[1]):
+                loss = - log_probs[b, i]
+                loss.backward(retain_graph=True)
+
+                prob = probs[b, i]
+
+                for name, param in model.named_parameters():
+                    gradients_dict[name] += (prob * grad_method(param.grad)).data
+
+                model.zero_grad()
+
+    return gradients_dict
+
+
+def create_mask_gradient(model, train_dataset, data_collator, num_samples, keep_ratio, sample_type, grad_type):
+    original_device = list(model.parameters())[0].device
+    cuda_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model.to(cuda_device)
+
+    data_loader = DataLoader(
+        train_dataset,
+        batch_size=1,
+        collate_fn=data_collator,
+        shuffle=True
+    )
+
+    if sample_type == "label":
+        importance_method = calculate_the_importance_label  # for small number of labels this one
+    elif sample_type == "expect":
+        importance_method = calculate_the_importance_expect  # for large number of labels this one needs to be used
+    else:
+        raise NotImplementedError
+
+    # this returns the fish mask
+    gradients = importance_method(model, data_loader, num_samples, cuda_device, grad_type)
+
+    # add sizes and aggregate tensors
+    sizes = {}
+    tensors = []
+
+    classifier_size = 0
+    all_params_size = 0
+
+    classifier_mask_dict = {}
+
+    # iterate over fish mask
+    for k, v in gradients.items():  # todo: do not use all gradient items -> only for the modules
+        # don't count classifier layer, they should be all trainable
+        if "classifier" in k:
+            classifier_size += torch.prod(torch.tensor(v.shape)).item()
+            classifier_mask_dict[k] = torch.ones_like(v).to(original_device)
+        else:
+            sizes[k] = v.shape
+            tensors.append(v.view(-1))  # tensors now includes the fish mask values
+
+        all_params_size += torch.prod(torch.tensor(v.shape)).item()
+
+    tensors = torch.cat(tensors, 0)
+
+    keep_num = int(all_params_size * keep_ratio) - classifier_size
+
+    assert keep_num > 0  # make sure there are trained params
+
+    top_pos = torch.topk(tensors, keep_num)[1]  # get the positions with the highest fisher information
+
+    masks = torch.zeros_like(tensors, device=cuda_device)  # create a mask of zeros
+
+    masks[top_pos] = 1  # only add ones for the tops positions -> only these weights will be updated
+
+    assert masks.long().sum() == len(top_pos)
+
+    mask_dict = {}
+
+    now_idx = 0
+    for k, v in sizes.items():
+        end_idx = now_idx + torch.prod(torch.tensor(v))
+        mask_dict[k] = masks[now_idx: end_idx].reshape(v).to(original_device)
+        now_idx = end_idx
+
+    assert now_idx == len(masks)
+
+    # Add the classifier's mask to mask_dict
+    mask_dict.update(classifier_mask_dict)
+
+    model.to(original_device)
+
+    # Print the parameters for checking
+    classifier_size = 0
+    all_params_size = 0
+    pretrain_weight_size = 0
+
+    for k, v in mask_dict.items():
+        if "classifier" in k:
+            classifier_size += (v == 1).sum().item()
+        else:
+            pretrain_weight_size += (v == 1).sum().item()
+
+        all_params_size += torch.prod(torch.tensor(v.shape)).item()
+
+    print(pretrain_weight_size, classifier_size, all_params_size)
+    print(f"trainable parameters: {(pretrain_weight_size + classifier_size) / all_params_size * 100} %")
+
+    return mask_dict
+
+
+def create_mask_random(model, train_dataset, data_collator, num_samples, keep_ratio):
+    original_device = list(model.parameters())[0].device
+    cuda_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    gradients = {}
+    for name, param in model.named_parameters():
+        gradients[name] = torch.rand(param.shape).to(original_device)
+
+    # add sizes and aggregate tensors
+    sizes = {}
+    tensors = []
+
+    classifier_size = 0
+    all_params_size = 0
+
+    classifier_mask_dict = {}
+
+    for k, v in gradients.items():
+        # don't count classifier layer, they should be all trainable
+        if "classifier" in k:
+            classifier_size += torch.prod(torch.tensor(v.shape)).item()
+            classifier_mask_dict[k] = torch.ones_like(v).to(original_device)
+        else:
+            sizes[k] = v.shape
+            tensors.append(v.view(-1))
+
+        all_params_size += torch.prod(torch.tensor(v.shape)).item()
+
+    tensors = torch.cat(tensors, 0)
+
+    keep_num = int(all_params_size * keep_ratio) - classifier_size
+
+    assert keep_num > 0
+
+    top_pos = torch.topk(tensors, keep_num)[1]
+
+    masks = torch.zeros_like(tensors, device=original_device)
+
+    masks[top_pos] = 1
+
+    assert masks.long().sum() == len(top_pos)
+
+    mask_dict = {}
+
+    now_idx = 0
+    for k, v in sizes.items():
+        end_idx = now_idx + torch.prod(torch.tensor(v))
+        mask_dict[k] = masks[now_idx: end_idx].reshape(v).to(original_device)
+        now_idx = end_idx
+
+    assert now_idx == len(masks)
+
+    # Add the classifier's mask to mask_dict
+    mask_dict.update(classifier_mask_dict)
+
+    model.to(original_device)
+
+    # Print the parameters for checking
+    classifier_size = 0
+    all_params_size = 0
+    pretrain_weight_size = 0
+
+    for k, v in mask_dict.items():
+        if "classifier" in k:
+            classifier_size += (v == 1).sum().item()
+        else:
+            pretrain_weight_size += (v == 1).sum().item()
+
+        all_params_size += torch.prod(torch.tensor(v.shape)).item()
+
+    print(pretrain_weight_size, classifier_size, all_params_size)
+    print(f"trainable parameters: {(pretrain_weight_size + classifier_size) / all_params_size * 100} %")
+
+    return mask_dict
+
+
+def create_mask_bias(model, train_dataset, data_collator, num_samples, keep_ratio):
+    original_device = list(model.parameters())[0].device
+    cuda_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model.to(cuda_device)
+
+    mask_dict = {}
+
+    for name, param in model.named_parameters():
+        if "classifier" in name:
+            mask_dict[name] = torch.ones_like(param, device=original_device)
+        elif "bias" in name:
+            mask_dict[name] = torch.ones_like(param, device=original_device)
+        else:
+            mask_dict[name] = torch.zeros_like(param, device=original_device)
+
+    # Print the parameters for checking
+    classifier_size = 0
+    all_params_size = 0
+    bias_params_size = 0
+
+    for k, v in mask_dict.items():
+        if "classifier" in k:
+            classifier_size += (v == 1).sum().item()
+        else:
+            bias_params_size += (v == 1).sum().item()
+
+        all_params_size += torch.prod(torch.tensor(v.shape)).item()
+
+    print(bias_params_size, classifier_size, all_params_size)
+
+    print(f"trainable parameters: {(bias_params_size + classifier_size) / all_params_size * 100} %")
+
+    model.to(original_device)
+
+    return mask_dict
+
+
+class SparseUpdateTrainer(Trainer):
+    def __init__(self, *args, mask, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mask = mask
+
+    def training_step(self, *args, **kwargs):
+        loss = super().training_step(*args, **kwargs)
+
+        # mask out the gradients
+        for name, params in self.model.named_parameters():
+            device = params.device
+            self.mask[name] = self.mask[name].to(device)
+
+            params.grad.data.copy_(params.grad.data * self.mask[name].data)
+
+        return loss
+
+"""
+
+@dataclass
+class SparseUpdateTrainingArguments(TrainingArguments):
+    num_samples: int = field(
+        default=1024,
+        metadata={"help": "The number of samples to compute parameters importance"}
+    )
+    keep_ratio: float = field(
+        default=0.005,
+        metadata={"help": "The trainable parameters to total parameters."}
+    )
+    mask_method: str = field(
+        default="label-absolute",
+        metadata={"help": "The method to select trainable parameters. Format: sample_type-grad_type, \
+                   where sample_type in \{label, expect\}, and grad_type in \{absolute, square\}"}
+    )
+    normal_training: bool = field(
+        default=False,
+        metadata={"help": "Whether to use typical BERT training method."}
+    )
+    mask_path: str = field(
+        default="",
+        metadata={"help": "The path for existing mask."}
+    )
+    data_split_path: str = field(
+        default="",
+        metadata={"help": "The path for existing training data indices."}
+    )
+    
+"""
+##### END OF INSERTION
 
 @dataclass
 class DataTrainingArguments:
@@ -144,6 +524,9 @@ class DataTrainingArguments:
         metadata={
             "help": "dynamic batching. Override batch size when larger than 0"
         },
+    ),
+    early_stopping_patience: Optional[int] = field(
+        default=10,
     )
 
     def __post_init__(self):
@@ -173,6 +556,11 @@ class ModelArguments:
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
+    ### INSERTED BELOW
+    model_load_path_second: str = field(
+        default="",
+        metadata={"help": ""}
+    )
     config_name: Optional[str] = field(
         default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
     )
@@ -198,7 +586,396 @@ class ModelArguments:
             "with private models)."
         },
     )
+    # todo: INSERTED HERE (Unipelt)
+    # prefix-tuning parameters
+    add_enc_prefix: bool = field(
+        default=False,
+        metadata={"help": "Whether use prefix tuning"},
+    )
+    add_dec_prefix: bool = field(
+        default=False,
+        metadata={"help": "Whether use prefix tuning"},
+    )
+    add_cross_prefix: bool = field(
+        default=False,
+        metadata={"help": "Whether use prefix tuning"},
+    )
+    prefix_len: Optional[int] = field(
+        default=10,
+        metadata={"help": "length of prefix tokens"},
+    )
+    mid_dim: Optional[int] = field(
+        default=512,
+        metadata={"help": "dim of middle layer"},
+    )
+    # bitfit parameters
+    tune_bias: bool = field(
+        default=False,
+        metadata={"help": "Whether tune bias terms"},
+    )
+    # LoRA parameters
+    add_lora: bool = field(
+        default=False,
+        metadata={"help": "Whether to use lora for linear layers"},
+    )
+    lora_r: Optional[int] = field(
+        default=8,
+        metadata={"help": "rank of lora"},
+    )
+    lora_alpha: Optional[int] = field(
+        default=16,
+        metadata={"help": "scaling = alpha / r"},
+    )
 
+    drop_first_layers: Optional[int] = field(
+        default=0,
+        metadata={
+            "help": "drop first k layers, work for both prefix and adapter, freeze transformer layers if fine-tuning"},
+    )
+    drop_first_adapter_layers: Optional[int] = field(
+        default=0,
+        metadata={"help": "drop first k adapter layers"},
+    )
+    drop_first_prefix_layers_enc: Optional[int] = field(
+        default=0,
+        metadata={"help": "drop first k prefix layers"},
+    )
+    drop_first_prefix_layers_dec: Optional[int] = field(
+        default=0,
+        metadata={"help": "drop first k prefix layers"},
+    )
+    drop_first_prefix_layers_cross: Optional[int] = field(
+        default=0,
+        metadata={"help": "drop first k prefix layers"},
+    )
+    add_adapter_gate: bool = field(
+        default=True,
+        metadata={"help": "add a gate to the adapter"},
+    )
+    add_prefix_gate: bool = field(
+        default=True,
+        metadata={"help": "add a gate to the prefix"},
+    )
+    add_lora_gate: bool = field(
+        default=True,
+        metadata={"help": "add a gate to the lora"},
+    )
+    add_central_gate: bool = field(
+        default=False,
+        metadata={"help": "add a shared gate"},
+    )
+    # todo: END OF INSERTION unipelt
+
+# todo INSERTED FROM petl.options
+from dataclasses import dataclass, field
+from typing import Optional
+
+@dataclass
+class GenerationArguments:
+    """
+    Arguments pertaining to which model/config/tokenizer we are going to fine-tune from.
+    """
+    min_length: Optional[int] = field(
+        default=10,
+        metadata={
+            "help": "minimal generation length"
+        },
+    )
+
+    max_length: Optional[int] = field(
+        default=128,
+        metadata={
+            "help": "max generation length"
+        },
+    )
+
+    num_beams: Optional[int] = field(
+        default=5,
+        metadata={
+            "help": "minimal generation length"
+        },
+    )
+
+    no_repeat_ngram_size: Optional[int] = field(
+        default=0,
+        metadata={
+            "help": "minimal generation length"
+        },
+    )
+
+    length_penalty: Optional[float] = field(
+        default=1.0,
+        metadata={
+            "help": "length penalty"
+        },
+    )
+
+@dataclass
+class TuneArguments:
+    attn_mode: Optional[str] = field(
+        default="none",
+        metadata={
+            "choices": ["prefix", "prefix_nomlp",
+            "none", "bitfit", "lora", "adapter",
+            "prompt_tuning"], \
+
+            "help": "config for attention, none to disable; \
+                prefix: mlp reparameterization to output prefix P; \
+                prefix_nomlp: prefix P as learned params; \
+                adapter: adapter mode; \
+                bitfit: the bitfit baseline; \
+                lora: the lora baseline; \
+                prompt_tuning: the prompt tuning baseline",
+        },
+    )
+
+
+    attn_option: Optional[str] = field(
+        default="concat",
+        metadata={
+            "choices": ["none",
+                        "concat",
+                        "cross_attn",
+                        "cross_attn_noln",
+                        "cross_attn_relu",
+                        "parallel",
+                        "sequential",
+                        ], \
+
+            "help": "specific attn configs; \
+                concat: concat prefix to self, this is prefix tuning baseline; \
+                cross_attn_noln: prefix tuning with vanilla add composition (instead of gated add), \
+                    need to be used together with 'attn_composition=add'; \
+                cross_attn: cross_attn_noln plus a layernorm layer \
+                cross_attn_relu: basically multi-head adapter, need to be used under 'prefix' mode; \
+                parallel: parallel insertion form; need to be used under 'adapter' mode; \
+                sequential: sequential insertion form; need to be used under 'adapter' mode;",
+
+        },
+    )
+
+    attn_composition: Optional[str] = field(
+        default="add",
+        metadata={
+            "choices": ["add", "gate_add"],
+            "help": "the composition function \
+                add: vanilla adding; \
+                gate_add: gated adding like prefix tuning"
+        },
+    )
+
+    ffn_mode: Optional[str] = field(
+        default="none",
+        metadata={
+            "choices": ["adapter", "none", "lora"],
+
+            "help": "config for ffn, none to disable; \
+            adapter: adapter mode; \
+            lora: the lora baseline",
+        },
+    )
+
+    ffn_option: Optional[str] = field(
+        default="none",
+        metadata={
+            "choices": ["parallel", "sequential", "pfeiffer", "none"], \
+
+            "help": "specific ffn configs; \
+                parallel: parallel insertion form; \
+                sequential: sequential insertion form; \
+                pfeiffer: the Pfeiffer adapter config"
+        },
+    )
+
+
+    ffn_adapter_layernorm_option: Optional[str] = field(
+        default="in",
+        metadata={
+            "choices": ["in", "out", "none"],
+            "help": "ffn adapter layernorm options; \
+                none: no layernorm; \
+                in: layernorm applied to input; \
+                out: layernorm applied to output"
+        },
+    )
+
+    ffn_adapter_init_option: Optional[str] = field(
+        default="bert",
+        metadata={
+            "choices": ["bert", "lora"],
+            "help": "ffn adapter option"
+        },
+    )
+
+    ffn_adapter_scalar: Optional[str] = field(
+        default="1",
+        metadata={
+            "help": "the scaling hyperparam for scaled adding composition; \
+                set to 'learnable_scalar' to learn this as a parameter"
+        },
+    )
+
+
+    mid_dim: Optional[int] = field(
+        default=800,
+        metadata={
+            "help": ""
+        },
+    )
+
+    attn_bn: Optional[int] = field(
+        default=200,
+        metadata={
+            "help": "the attention bottleneck dimension"
+        },
+    )
+
+    ffn_bn: Optional[int] = field(
+        default=-1,
+        metadata={
+            "help": "the ffn bottleneck dimension"
+        },
+    )
+
+    prefix_dropout: Optional[float] = field(
+        default=0.0,
+        metadata={
+            "help": ""
+        },
+    )
+
+    unfreeze_params: Optional[str] = field(
+        default="ef_",
+        metadata={
+            "help": "param names that contain the string will \
+                be unfreezed, all other params will be freezed"
+        },
+    )
+
+
+    load_path: Optional[str] = field(
+        default="",
+        metadata={
+            "help": ""
+        },
+    )
+
+    lora_alpha: Optional[float] = field(
+        default=32.0,
+        metadata={
+            "help": "scaling: alpha / r"
+        },
+    )
+
+    lora_dropout: Optional[float] = field(
+        default=0.0,
+        metadata={
+            "help": "scaling: alpha / r"
+        },
+    )
+
+    lora_init: Optional[str] = field(
+        default="lora",
+        metadata={
+            "choices": ["bert", "lora"],
+            "help": ""
+        },
+    )
+
+# todo: new class here
+@dataclass
+class SparseUpdateTrainingArguments:
+    num_samples: int = field(
+        default=1024,
+        metadata={"help": "The number of samples to compute parameters importance"}
+    )
+    keep_ratio: float = field(
+        default=0.005,
+        metadata={"help": "The trainable parameters to total parameters."}
+    )
+    mask_method: str = field(
+        default="label-absolute",
+        metadata={"help": "The method to select trainable parameters. Format: sample_type-grad_type, \
+                   where sample_type in \{label, expect\}, and grad_type in \{absolute, square\}"}
+    )
+    normal_training: bool = field(
+        default=False,
+        metadata={"help": "Whether to use typical BERT training method."}
+    )
+    mask_path: str = field(
+        default="",
+        metadata={"help": "The path for existing mask."}
+    )
+    data_split_path: str = field(
+        default="",
+        metadata={"help": "The path for existing training data indices."}
+    )
+
+@dataclass
+class MBARTArguments:
+    """
+    Arguments pertaining to which model/config/tokenizer we are going to fine-tune from.
+    """
+
+    dropout: Optional[float] = field(
+        default=0.3,
+        metadata={
+            "help": ""
+        },
+    )
+
+    attention_dropout: Optional[float] = field(
+        default=0.1,
+        metadata={
+            "help": ""
+        },
+    )
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+@dataclass
+class AdapterArguments:
+    """
+    The subset of arguments related to model training.
+    """
+
+    train_adapter: bool = field(default=False, metadata={"help": "Train an model instead of the full model."})
+    load_adapter: Optional[str] = field(
+        default="", metadata={"help": "Pre-trained model module to be loaded from Hub."}
+    )
+    adapter_config: Optional[str] = field(
+        default="pfeiffer", metadata={"help": "Adapter configuration. Either an identifier or a path to a file."}
+    )
+    adapter_non_linearity: Optional[str] = field(
+        default=None, metadata={"help": "Override the non-linearity of the model configuration."}
+    )
+    adapter_reduction_factor: Optional[int] = field(
+        default=None, metadata={"help": "Override the reduction factor of the model configuration."}
+    )
+    language: Optional[str] = field(default=None, metadata={"help": "The training language, e.g. 'en' for English."})
+
+
+@dataclass
+class MultiLingAdapterArguments(AdapterArguments):
+    """
+    Arguemnts related to model training, extended by arguments for multilingual setups.
+    """
+
+    load_lang_adapter: Optional[str] = field(
+        default=None, metadata={"help": "Pre-trained language model module to be loaded from Hub."}
+    )
+    lang_adapter_config: Optional[str] = field(
+        default=None, metadata={"help": "Language model configuration. Either an identifier or a path to a file."}
+    )
+    lang_adapter_non_linearity: Optional[str] = field(
+        default=None, metadata={"help": "Override the non-linearity of the language model configuration."}
+    )
+    lang_adapter_reduction_factor: Optional[int] = field(
+        default=None, metadata={"help": "Override the reduction factor of the language model configuration."}
+    )
+# todo END OF INSERTION from petl.options
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -206,13 +983,21 @@ def main():
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments,
-                               TuneArguments))
+                               #TuneArguments,
+                               SparseUpdateTrainingArguments,
+                               MultiLingAdapterArguments))  # todo: added SparseUpdate; Multilingualadapterarguments
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
-        model_args, data_args, training_args, tune_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        model_args, data_args, training_args, sparse_args, adapter_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        #tune_args, \
+        # todo: adapter_args -> if I don't need multilingual adapters -> I can use model arguments only,
+        #  commented out tune_args
     else:
-        model_args, data_args, training_args, tune_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args, sparse_args, adapter_args = parser.parse_args_into_dataclasses()
+        #tune_args,
+
+    print("do I get here?")
 
     # Setup logging
     logging.basicConfig(
@@ -220,7 +1005,7 @@ def main():
         datefmt="%m/%d/%Y %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
-    logger.setLevel(logging.INFO if training_args.should_log else logging.WARN)
+    logger.setLevel(logging.INFO if is_main_process(training_args.local_rank) else logging.WARN)
 
     # Log on each process the small summary:
     logger.warning(
@@ -228,7 +1013,7 @@ def main():
         + f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
     )
     # Set the verbosity to info of the Transformers logger (on main process only):
-    if training_args.should_log:
+    if is_main_process(training_args.local_rank):
         transformers.utils.logging.set_verbosity_info()
         transformers.utils.logging.enable_default_handler()
         transformers.utils.logging.enable_explicit_format()
@@ -332,13 +1117,46 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
+    # todo: INSERTION from unipelt
+    # additional arguments
+    config.add_enc_prefix = model_args.add_enc_prefix
+    config.add_dec_prefix = model_args.add_dec_prefix
+    config.add_cross_prefix = model_args.add_cross_prefix
+    config.prefix_len = model_args.prefix_len
+    config.mid_dim = model_args.mid_dim
+    if 'bert' in model_args.model_name_or_path:
+        num_layers = config.num_hidden_layers
+    elif 'bart' in model_args.model_name_or_path:
+        num_layers = config.encoder_layers
+    config.add_adapter_gate = model_args.add_adapter_gate
+    config.add_prefix_gate = model_args.add_prefix_gate
+    config.tune_bias = model_args.tune_bias
+    config.add_lora = model_args.add_lora
+    config.lora_r = model_args.lora_r
+    config.lora_alpha = model_args.lora_alpha
+    config.add_lora_gate = model_args.add_lora_gate
+    config.add_central_gate = model_args.add_central_gate
+    config.early_stopping_patience = data_args.early_stopping_patience
 
+    if model_args.drop_first_layers == 0:
+        config.drop_first_prefix_layers_enc = list(range(model_args.drop_first_prefix_layers_enc))
+        config.drop_first_prefix_layers_dec = list(range(model_args.drop_first_prefix_layers_dec))
+        config.drop_first_prefix_layers_cross = list(range(model_args.drop_first_prefix_layers_cross))
+    else:
+        # override by drop_first_layers
+        model_args.drop_first_adapter_layers = model_args.drop_first_layers
+        config.drop_first_prefix_layers_enc = list(range(model_args.drop_first_layers))
+        config.drop_first_prefix_layers_dec = list(range(model_args.drop_first_layers - num_layers))
+        config.drop_first_prefix_layers_cross = list(range(model_args.drop_first_layers - num_layers))
+    # todo: INSERTION END unipelt
     # put useful args into config: these arguments will be used in models, thus adding them to config
     # interested_args = ['use_prefix', 'mid_dim', 'preseqlen', 'prefix_dropout', 'unfreeze_params']
+    # todo: commented out - tune args not required for unipelt
+    """
     for k, v in vars(tune_args).items():
         if not hasattr(config, k):
             setattr(config, k, v)
-
+    """
     setattr(training_args, 'max_tokens_per_batch', data_args.max_tokens_per_batch)
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -356,7 +1174,77 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
+    # todo: INSERTION FROM unipelt
+    # Setup adapters
+    if adapter_args.train_adapter:
+        task_name = data_args.task_name or "glue"
+        # check if adapter already exists, otherwise add it
+        if task_name not in model.config.adapters:
+            print("Is the task name not in the model config adapters?")
+            # resolve the adapter config
+            adapter_config = AdapterConfig.load(
+                adapter_args.adapter_config,
+                non_linearity=adapter_args.adapter_non_linearity,
+                reduction_factor=adapter_args.adapter_reduction_factor,
+                leave_out=list(range(model_args.drop_first_adapter_layers))
+            )
+            # load a pre-trained from Hub if specified
+            if adapter_args.load_adapter:
+                model.load_adapter(
+                    adapter_args.load_adapter,
+                    config=adapter_config,
+                    load_as=task_name,
+                )
+            # otherwise, add a fresh adapter
+            else:
+                model.add_adapter(task_name, config=adapter_config)
+        # optionally load a pre-trained language adapter
+        if adapter_args.load_lang_adapter:
+            # resolve the language adapter config
+            lang_adapter_config = AdapterConfig.load(
+                adapter_args.lang_adapter_config,
+                non_linearity=adapter_args.lang_adapter_non_linearity,
+                reduction_factor=adapter_args.lang_adapter_reduction_factor,
+            )
+            # load the language adapter from Hub
+            lang_adapter_name = model.load_adapter(
+                adapter_args.load_lang_adapter,
+                config=lang_adapter_config,
+                load_as=adapter_args.language,
+            )
+        else:
+            lang_adapter_name = None
+        # Freeze all model weights except of those of this adapter
+        model.train_adapter([task_name])
+        # Set the adapters to be used in every forward pass
+        if lang_adapter_name:
+            model.set_active_adapters([lang_adapter_name, task_name])
+        else:
+            model.set_active_adapters([task_name])
+    else:
+        except_para_l = []
+        if config.tune_bias:
+            except_para_l.append('bias')
+        if config.add_lora:
+            except_para_l.append('lora')
+        if any([config.add_enc_prefix, config.add_dec_prefix, config.add_cross_prefix]):
+            except_para_l.append('prefix')
+        if len(except_para_l) > 0:
+            freeze_params(model, except_para_l=except_para_l)
+        elif model_args.drop_first_layers > 0:
+            freeze_params_by_layers(model, num_layers, num_frozen_layers=model_args.drop_first_layers)
 
+        if adapter_args.load_adapter or adapter_args.load_lang_adapter:
+            raise ValueError(
+                "Adapters can only be loaded in adapters training mode."
+                "Use --train_adapter to enable adapter training"
+            )
+
+        # todo: END OF INSERTION HERE
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"trainable_params: {trainable_params}, total_params: {total_params}")
 
     # Preprocessing the datasets
     if data_args.task_name is not None:
@@ -410,6 +1298,8 @@ def main():
         )
     max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
 
+    # todo: commented out, not needed for unipelt
+    """
     if tune_args.attn_mode != "none" or tune_args.ffn_mode != "none":
         if tune_args.load_path == "":
             model = PETLEncModel(config, tune_args, model)
@@ -424,10 +1314,12 @@ def main():
                 args=tune_args,
                 pretrained_model=model,
             )
+    """
 
-    # print(model)
-    # for n, p in model.named_parameters():
-    #     print(n, p.requires_grad)
+    print(model)
+    for n, p in model.named_parameters():
+        print(n, p.requires_grad)
+    #print(config)
 
     def preprocess_function(examples):
         # Tokenize the texts
@@ -502,24 +1394,106 @@ def main():
     else:
         data_collator = None
 
-    # Initialize our Trainer
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset if training_args.do_train else None,
-        eval_dataset=eval_dataset if training_args.do_eval else None,
-        compute_metrics=compute_metrics,
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-    )
+    if model_args.model_load_path_second != "":
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_args.model_load_path_second,
+            from_tf=bool(".ckpt" in model_args.model_load_path_second),
+            config=config,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
+
+    if sparse_args.normal_training:
+
+        """
+        # Initialize our Trainer
+        trainer = GLUETrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset if training_args.do_eval else None,
+            compute_metrics=compute_metrics,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+        )
+        """
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset if training_args.do_train else None,
+            eval_dataset=eval_dataset if training_args.do_eval else None,
+            compute_metrics=compute_metrics,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+        )
+    else:
+        # TODO###### INSERTION HERE ##############
+        if sparse_args.mask_path != "":
+            mask = torch.load(sparse_args.mask_path, map_location="cpu")
+        else:
+            if sparse_args.mask_method == "bias":
+                mask_method = create_mask_bias
+                mask = create_mask_bias(
+                    model, train_dataset, data_collator, sparse_args.num_samples, sparse_args.keep_ratio
+                )
+
+            elif sparse_args.mask_method == "random":
+                mask_method = create_mask_random
+
+                mask = create_mask_random(
+                    model, train_dataset, data_collator, sparse_args.num_samples, sparse_args.keep_ratio
+                )
+
+            else:
+                sample_type, grad_type = sparse_args.mask_method.split("-")
+
+                mask = create_mask_gradient(
+                    model,
+                    train_dataset,
+                    data_collator,
+                    sparse_args.num_samples,
+                    sparse_args.keep_ratio,
+                    sample_type,
+                    grad_type
+                )
+                # print(mask)
+
+                # def reset_classifier(model):
+                #     for n, p in model.named_parameters():
+                #         if "classifier.weight" in n:
+                #             p.data.normal_(mean=0.0, std=model.config.initializer_range)
+                #         elif "classifier.bias" in n:
+                #             p.data.zero_()
+
+                # reset_classifier(model)
+
+        # Initialize our Trainer
+        trainer = SparseUpdateTrainer(
+            model=model,
+            args=training_args,
+            mask=mask,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset if training_args.do_eval else None,
+            compute_metrics=compute_metrics,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+        )
+    ############# INSERTION END HERE #################
+
+
 
     # Training
     if training_args.do_train:
         checkpoint = None
-        if training_args.resume_from_checkpoint is not None:
-            checkpoint = training_args.resume_from_checkpoint
-        elif last_checkpoint is not None:
+        if last_checkpoint is not None:
             checkpoint = last_checkpoint
+        elif os.path.isdir(model_args.model_name_or_path):
+            # Check the config from that potential checkpoint has the right number of labels before using it as a
+            # checkpoint.
+            if AutoConfig.from_pretrained(model_args.model_name_or_path).num_labels == num_labels:
+                checkpoint = model_args.model_name_or_path
+
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         metrics = train_result.metrics
         max_train_samples = (
@@ -532,6 +1506,13 @@ def main():
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
         trainer.save_state()
+
+    print("After training", model)
+    for n, _ in model.named_parameters():
+        print(n)
+    # todo: inserted
+    if not sparse_args.normal_training:
+        torch.save(mask, os.path.join(training_args.output_dir, "mask.bin"))  # saves the mask
 
     # Evaluation
     if training_args.do_eval:
@@ -582,7 +1563,7 @@ def main():
                         else:
                             item = label_list[item]
                             writer.write(f"{index}\t{item}\n")
-
+    """
     if training_args.push_to_hub:
         kwargs = {"finetuned_from": model_args.model_name_or_path, "tasks": "text-classification"}
         if data_args.task_name is not None:
@@ -592,7 +1573,7 @@ def main():
             kwargs["dataset"] = f"GLUE {data_args.task_name.upper()}"
 
         trainer.push_to_hub(**kwargs)
-
+    """
 
 def _mp_fn(index):
     # For xla_spawn (TPUs)
