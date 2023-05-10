@@ -47,7 +47,7 @@ debug=0  # OK  #todo: set to 1 for trials
 # set to "wandb" to use weights & bias
 report_to="none" # this is just a visualization tool
 
-bsz=16
+bsz=2  # 2 for lmu gpus, orig 16
 gradient_steps=1
 
 
