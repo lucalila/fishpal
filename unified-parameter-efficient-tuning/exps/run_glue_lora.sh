@@ -47,12 +47,12 @@ debug=0  # OK  #todo: set to 1 for trials
 # set to "wandb" to use weights & bias
 report_to="none" # this is just a visualization tool
 
-bsz=2  # 2 for lmu gpus, orig 16
+bsz=16  # 2 for lmu gpus, orig 16
 gradient_steps=1
 
 
 model="roberta-base" # todo: roberta-base
-lr=1e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4
+lr=5e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4
 num_train_epochs=10 # todo: 50 for unipelt (7 in fish paper; 10 from He et al.)
 max_seq_length=128
 
@@ -184,12 +184,12 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --train_adapter ${train_adapter} \
     --early_stopping_patience ${early_stopping_patience} \
     --seed ${seed} \
+    --fp16 \
     --max_eval_samples ${max_eval_samples} \
     --gradient_accumulation_steps ${gradient_steps} \
     --max_steps ${max_steps} \
     --num_train_epochs ${num_train_epochs} \
     --learning_rate ${lr} \
-    --fp16 \
     --lr_scheduler_type ${lr_scheduler_type} \
     --max_grad_norm ${max_grad_norm} \
     --weight_decay ${weight_decay} \
