@@ -15,7 +15,8 @@
 # limitations under the License.
 """ Finetuning the library models for sequence classification on GLUE."""
 # You can also adapt this script on your own text classification task. Pointers for this are left as comments.
-##TODO: modified run_glue.py file for combination of petl and sparse updates from fish paper, plus unipelt
+
+# modified run_glue.py file for combination of petl, unipelt and sparse updates from fish paper
 
 import logging
 import os
@@ -30,14 +31,14 @@ from datasets import load_dataset, load_metric
 
 import transformers
 from transformers import (
-    AdapterConfig,  # todo: added from unipelt, added adapter folder to src/transformers
+    AdapterConfig,
     AutoConfig,
     AutoModelForSequenceClassification,
     AutoTokenizer,
     DataCollatorWithPadding,
     EvalPrediction,
     HfArgumentParser,
-    #MultiLingAdapterArguments,  # todo: added from unipelt
+    #MultiLingAdapterArguments,
     PretrainedConfig,
     Trainer,
     TrainingArguments,
@@ -47,29 +48,14 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint, is_main_process
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
-import torch  # todo: from fish
-from torch.utils.data import DataLoader  # todo: from fish
+import torch
+from torch.utils.data import DataLoader
 
-"""
-from petl.options import (
-    GenerationArguments,
-    TuneArguments,
-    SparseUpdateTrainingArguments,  # todo: added newly into the petl.options file
-    AdapterArguments,          # todo: added from unipelt & added newly into the petl.options file
-    MultiLingAdapterArguments  # todo: added from unipelt & added newly into the petl.options file
-)
-
-from petl.petl_enc_model import PETLEncModel
-from petl.dynamic_batching import DynamicBatchingDataset
-"""
-
-# todo: new trainer class -> not needed as my fallback is the default trainer
-#from custom_trainer import GLUETrainer
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-from utils import freeze_params, choose_gpu, freeze_params_by_layers  # todo: added from unipelt, also added utils.py to repo
+from utils import freeze_params, choose_gpu, freeze_params_by_layers
 
-require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/text-classification/requirements.txt")
+#require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/text-classification/requirements.txt")
 
 task_to_keys = {
     "cola": ("sentence", None),
@@ -87,8 +73,8 @@ logger = logging.getLogger(__name__)
 
 #TODO#### BEGIN OF INSERTION ###########
 
-# Todo: Difference between this one and below is based on the number of labels: If small nb of labels, the first one
-#  can be used, otherwise use the second one. For sst-2 the first one can be used.
+# Todo: If small nb of labels, the first one can be used,
+#  otherwise use the second one. For sst-2 the first one can be used.
 def calculate_the_importance_label(model, data_loader, num_samples, cuda_device, grad_type):
     """
     Args:
@@ -557,10 +543,10 @@ class ModelArguments:
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
     ### INSERTED BELOW
-    model_load_path_second: str = field(
-        default="",
-        metadata={"help": ""}
-    )
+    #model_load_path_second: str = field(
+    #    default="",
+    #    metadata={"help": ""}
+    #)
     config_name: Optional[str] = field(
         default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
     )
@@ -997,7 +983,6 @@ def main():
         model_args, data_args, training_args, sparse_args, adapter_args = parser.parse_args_into_dataclasses()
         #tune_args,
 
-    print("do I get here?")
 
     # Setup logging
     logging.basicConfig(
@@ -1316,10 +1301,10 @@ def main():
             )
     """
 
-    print(model)
+    #print(model)
     for n, p in model.named_parameters():
         print(n, p.requires_grad)
-    #print(config)
+    #print("This is the config: ", config)
 
     def preprocess_function(examples):
         # Tokenize the texts
@@ -1393,7 +1378,7 @@ def main():
         data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
     else:
         data_collator = None
-
+    """
     if model_args.model_load_path_second != "":
         model = AutoModelForSequenceClassification.from_pretrained(
             model_args.model_load_path_second,
@@ -1403,6 +1388,7 @@ def main():
             revision=model_args.model_revision,
             use_auth_token=True if model_args.use_auth_token else None,
         )
+    """
 
     if sparse_args.normal_training:
 
@@ -1507,9 +1493,9 @@ def main():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
 
-    print("After training", model)
-    for n, _ in model.named_parameters():
-        print(n)
+    #print("After training", model)
+    #for n, _ in model.named_parameters():
+    #    print(n)
     # todo: inserted
     if not sparse_args.normal_training:
         torch.save(mask, os.path.join(training_args.output_dir, "mask.bin"))  # saves the mask

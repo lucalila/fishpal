@@ -52,7 +52,7 @@ gradient_steps=1
 
 
 model="roberta-base" # todo: roberta-base
-lr=1e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4
+lr=2e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4
 num_train_epochs=10 # todo: 50 for unipelt (7 in fish paper; 10 from He et al.)
 max_seq_length=128
 
