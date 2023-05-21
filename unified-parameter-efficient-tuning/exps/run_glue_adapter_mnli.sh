@@ -42,7 +42,7 @@ seed=42
 
 # set to 1 for debug mode which only
 # uses 1600 training examples
-debug=1  # OK  #todo: set to 1 for trials
+debug=0  # OK  #todo: set to 1 for trials
 
 # set to "wandb" to use weights & bias
 report_to="none" # this is just a visualization tool
@@ -195,6 +195,7 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --weight_decay ${weight_decay} \
     --warmup_steps ${warmup_updates} \
     --warmup_ratio ${warmup_ratio} \
+    --fp16 \
     --max_seq_length ${max_seq_length} \
     --logging_steps ${logging_steps} \
     --save_total_limit 2 \
