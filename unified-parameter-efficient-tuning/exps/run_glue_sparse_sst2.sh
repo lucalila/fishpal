@@ -15,7 +15,7 @@ export HF_METRICS_CACHE=checkpoints/hf_model
 cache_dir=${TRANSFORMERS_CACHE}
 
 
-TASK_NAME=mnli
+TASK_NAME=sst2
 metric="accuracy"
 
 # wandb env variables
@@ -25,13 +25,14 @@ export WANDB_WATCH="false"
 DATE=`date +%Y%m%d`
 
 
-seed=77
+seed=111
 # 11, 22, 33, 44, 55, 66, 77, 88, 99 , 111
+# 12, 23, 34, 45, 56, 67, 78, 89, 90, 91
 
 
 # set to 1 for debug mode which only
 # uses 1600 training examples
-debug=1  # OK  #todo: set to 1 for trials
+debug=0  # OK  #todo: set to 1 for trials
 
 # set to "wandb" to use weights & bias
 report_to="none" # this is just a visualization tool
@@ -174,6 +175,7 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --train_adapter ${train_adapter} \
     --early_stopping_patience ${early_stopping_patience} \
     --seed ${seed} \
+    --fp16 \
     --max_eval_samples ${max_eval_samples} \
     --gradient_accumulation_steps ${gradient_steps} \
     --max_steps ${max_steps} \

@@ -273,7 +273,7 @@ def create_mask_gradient(model, train_dataset, data_collator, num_samples, keep_
 
 def evaluate_modules_per_layer(gradients, layers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
                                prefix_scaling=10000,
-                               adapter_scaling=10):
+                               adapter_scaling=5):
     total_grad_sum_prefix, total_grad_sum_adapter, total_grad_sum_lora = 0, 0, 0  # todo: just for checking
     total_nb_params_prefix, total_nb_params_adapter, total_nb_params_lora = 0, 0, 0  # todo: just for checking
 
@@ -409,13 +409,19 @@ def evaluate_modules_per_layer(gradients, layers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
     return best_module_per_layer
 
 
-def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active):
+def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name):
     lora_items = [".attention.self.query.lora_B", ".attention.self.value.lora_B",
                   ".attention.self.query.lora_A", ".attention.self.value.lora_A"]
-    adapter_items = [".output.adapters.mnli.adapter_down.0.weight",
-                     ".output.adapters.mnli.adapter_down.0.bias",
-                     ".output.adapters.mnli.adapter_up.weight",
-                     ".output.adapters.mnli.adapter_up.bias"]
+    if task_name == "sst2":
+        adapter_items = [".output.adapters.sst2.adapter_down.0.weight",
+                         ".output.adapters.sst2.adapter_down.0.bias",
+                         ".output.adapters.sst2.adapter_up.weight",
+                         ".output.adapters.sst2.adapter_up.bias"]
+    else:
+        adapter_items = [".output.adapters.mnli.adapter_down.0.weight",
+                         ".output.adapters.mnli.adapter_down.0.bias",
+                         ".output.adapters.mnli.adapter_up.weight",
+                         ".output.adapters.mnli.adapter_up.bias"]
     prefix_items = ["roberta.encoder.prefix_enc_embed.weight",
                      "roberta.encoder.prefix_embed_MLP.0.bias",
                      "roberta.encoder.prefix_embed_MLP.0.weight",
@@ -441,7 +447,7 @@ def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active):
     return except_para_l
 
 
-def create_mask_one_module(model, train_dataset, data_collator, num_samples, grad_type="square"):
+def create_mask_one_module(model, train_dataset, data_collator, num_samples, task_name, grad_type="square"):
     original_device = list(model.parameters())[0].device
     cuda_device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -485,19 +491,15 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, gra
     else:
         prefix_tuning_active = True
     # prepare params that should not be freezed
-    except_para_l = prepare_params_to_exclude(modules_per_layer, prefix_tuning_active)
+    except_para_l = prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name)
     #print("Except params: ", except_para_l)
     freeze_params(model, except_para_l=except_para_l)  # function freezes all params, except the ones in the list
     #for name, par in model.named_parameters():  # doublecheck
     #    print(name, par.requires_grad)
 
-
-
-
     mask_dict = {}
 
     for k, v in gradients.items():
-        #print("keys in gradients: ", k)
         # don't count classifier layer, they should be all trainable
         if "classifier" in k:
             classifier_size += torch.prod(torch.tensor(v.shape)).item()
@@ -565,6 +567,9 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, gra
     pretrain_weight_size = 0
 
     for k, v in mask_dict.items():
+        print("keys in gradients: ", k)
+        print(v)
+    
         #print("keys in mask: ", k)
         #print(v)
         if "classifier" in k:
@@ -707,7 +712,7 @@ class SparseUpdateTrainer(Trainer):
         for name, params in self.model.named_parameters():
             device = params.device
             if name in self.mask:  # todo: I added this here -> not all params occur in my mask implementation
-                print(name)
+                #print(name)
                 self.mask[name] = self.mask[name].to(device)
                 params.grad.data.copy_(params.grad.data * self.mask[name].data)
 
@@ -1708,9 +1713,7 @@ def main():
                 mask_method = create_mask_one_module
 
                 mask = create_mask_one_module(
-                    model, train_dataset, data_collator, sparse_args.num_samples)
-
-                # print("The size of the tensor: ", tensor.size())
+                    model, train_dataset, data_collator, sparse_args.num_samples, data_args.task_name)
 
             else:
                 sample_type, grad_type = sparse_args.mask_method.split("-")
@@ -1735,7 +1738,7 @@ def main():
                 #             p.data.zero_()
 
                 # reset_classifier(model)
-
+        
         # Initialize our Trainer
         #todo: set up trainer as before
         trainer = SparseUpdateTrainer(
@@ -1773,9 +1776,9 @@ def main():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
 
-    print("After training", model)
-    for n, _ in model.named_parameters():
-       print(n)
+    #print("After training", model)
+    #for n, _ in model.named_parameters():
+    #   print(n)
     #todo: inserted
     if not sparse_args.normal_training:
        torch.save(mask, os.path.join(training_args.output_dir, "mask.bin"))  # saves the mask
@@ -1829,6 +1832,7 @@ def main():
                         else:
                             item = label_list[item]
                             writer.write(f"{index}\t{item}\n")
+
     """
     if training_args.push_to_hub:
         kwargs = {"finetuned_from": model_args.model_name_or_path, "tasks": "text-classification"}
