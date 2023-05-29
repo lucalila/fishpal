@@ -24,10 +24,12 @@ import random
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
-import json # Todo: new import from other script, may not be relevant
+import json  # Todo: new import from other script, may not be relevant
 
 import numpy as np
 from datasets import load_dataset, load_metric
+import decimal  # added this for max operation
+import math  # added for log calc
 
 import transformers
 from transformers import (
@@ -38,7 +40,7 @@ from transformers import (
     DataCollatorWithPadding,
     EvalPrediction,
     HfArgumentParser,
-    #MultiLingAdapterArguments,
+    # MultiLingAdapterArguments,
     PretrainedConfig,
     Trainer,
     TrainingArguments,
@@ -51,11 +53,10 @@ from transformers.utils.versions import require_version
 import torch
 from torch.utils.data import DataLoader
 
-
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 from utils import freeze_params, choose_gpu, freeze_params_by_layers
 
-#require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/text-classification/requirements.txt")
+# require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/text-classification/requirements.txt")
 
 task_to_keys = {
     "cola": ("sentence", None),
@@ -71,10 +72,11 @@ task_to_keys = {
 
 logger = logging.getLogger(__name__)
 
-#TODO#### BEGIN OF INSERTION ###########
+
+# TODO#### BEGIN OF INSERTION ###########
 
 # Todo: If small nb of labels, the first one can be used,
-#  otherwise use the second one. For sst-2 the first one can be used.
+#  otherwise use the second one. For sst-2 and mnli the first one can be used.
 def calculate_the_importance_label(model, data_loader, num_samples, cuda_device, grad_type):
     """
     Args:
@@ -84,10 +86,9 @@ def calculate_the_importance_label(model, data_loader, num_samples, cuda_device,
 
     for name, param in model.named_parameters():
         # create a gradient dictionary with 0s only for all model parameter tensors
-        if "adapter" in name:
+        # adjusted: only calc gradients for module layers and classifier layer
+        if "classifier" in name or "adapter" in name or "lora" in name or "prefix" in name:
             gradients_dict[name] = torch.zeros_like(param).to(cuda_device)
-            # todo: added this here
-            #print(name)
     # choose the calculation method
     if grad_type == "absolute":
         grad_method = torch.abs
@@ -111,7 +112,6 @@ def calculate_the_importance_label(model, data_loader, num_samples, cuda_device,
 
         # get the model output (logits + loss)
         return_dicts = model(**inputs)
-        #print(return_dicts)  # todo: added this here
         # extract the loss
         loss = return_dicts["loss"]
 
@@ -121,14 +121,10 @@ def calculate_the_importance_label(model, data_loader, num_samples, cuda_device,
         for name, param in model.named_parameters():
             # grad method is either square or absolute
             # add the squared value of each model param to the gradients dict (which is initialized by 0)
-            if "adapter" in name: # todo: workaround for adapters
-                #print(name)  # todo: added this here
-                #print(param)
-                #print(param.grad)  # todo: this one is None -> not anymore, requires_grad is true for adapter layers
-
+            # todo: adapted for all three modules
+            if "classifier" in name or "adapter" in name or "lora" in name or "prefix" in name:
                 # calculate the square of the gradients
                 gradients_dict[name] += grad_method(param.grad).data
-
         # set the gradients to zero
         model.zero_grad()
     # return the dict of the squares of the gradients
@@ -275,6 +271,316 @@ def create_mask_gradient(model, train_dataset, data_collator, num_samples, keep_
     return mask_dict
 
 
+def evaluate_modules_per_layer(gradients, layers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+                               prefix_scaling=10000,
+                               adapter_scaling=10):
+    total_grad_sum_prefix, total_grad_sum_adapter, total_grad_sum_lora = 0, 0, 0  # todo: just for checking
+    total_nb_params_prefix, total_nb_params_adapter, total_nb_params_lora = 0, 0, 0  # todo: just for checking
+
+    sum_prefix, num_prefix = 0, 0
+    collect_results = dict()
+
+    # preformat prefix weights
+    for k, v in gradients.items():
+        if "prefix" in k:
+            if "roberta.encoder.prefix_embed_MLP.2.weight" not in k and \
+                    "roberta.encoder.prefix_embed_MLP.2.bias" not in k:
+                # print("These are the params in the first if: ", k)
+                total_grad_sum_prefix += v.sum()  # todo: just for checking
+                total_nb_params_prefix += torch.numel(v)  # todo: just for checking
+                print(k, v.size())  # todo: just for checking
+                sum_prefix += v.sum()
+                num_prefix += torch.numel(v)
+            elif "roberta.encoder.prefix_embed_MLP.2.weight" == k:
+                total_grad_sum_prefix += v.sum()  # todo: just for checking
+                total_nb_params_prefix += torch.numel(v)  # todo: just for checking
+                print(k, v.size())  # todo: just for checking
+                v = v.view(-1, 12 * 2, 12, 64)  # split the weights according to the model implementation
+                v = v.permute([1, 2, 0, 3])
+                mlp_weights = v.split(2)
+            elif "roberta.encoder.prefix_embed_MLP.2.bias" == k:
+                total_grad_sum_prefix += v.sum()  # todo: just for checking
+                total_nb_params_prefix += torch.numel(v)  # todo: just for checking
+                print(k, v.size())  # todo: just for checking
+                v = v.view(12 * 2, 12, 64)
+                mlp_bias = v.split(2)
+
+    # todo: this is just a check
+    # sum up per layer:
+    #for weight, bias in zip(mlp_weights, mlp_bias):
+    #    print("Sum of the layer: ", weight.sum()+bias.sum()+sum_prefix)
+    
+    for layer in layers:
+        layer_sum, layer_num = 0, 0  # init by 0
+        layer_sum += mlp_weights[layer].sum()  # per layer add the respective weight sum
+        layer_sum += mlp_bias[layer].sum()  # per layer add the respective bias sum todo: should I remove this?
+        layer_sum += sum_prefix  # add the sum of the other (not-layer-specific) params
+        # nb of params
+        layer_num += torch.numel(mlp_weights[layer])
+        layer_num += torch.numel(mlp_bias[layer])
+        layer_num += num_prefix
+
+        if layer in collect_results:
+            collect_results[layer]["prefix"] = decimal.Decimal((layer_sum / layer_num).item() * prefix_scaling)
+        else:
+            collect_results[layer] = {"prefix": decimal.Decimal((layer_sum / layer_num).item() * prefix_scaling)}
+
+    group_param_per_layer = dict()
+    for layer in layers:
+        params_per_layer = []
+        named_layer = "layer." + str(layer) + "."
+        for key in gradients.keys():
+            if named_layer in key:
+                params_per_layer.append(key)
+        group_param_per_layer[layer] = params_per_layer
+
+    # sum of params and nb of params for normalization
+    for layer, params in group_param_per_layer.items():
+        sum_adapter, sum_lora, num_adapter, num_lora = 0, 0, 0, 0
+        for param in params:
+            if "adapter" in param:  # and "bias" not in param:
+                total_grad_sum_adapter += gradients[param].sum()  # todo: just for checking
+                total_nb_params_adapter += torch.numel(gradients[param])  # todo: just for checking
+                print(param, gradients[param].size())
+                #print("Adapter: ", layer, param)
+                #print("Sum: ", gradients[param].sum())
+                #print("Nb: ", torch.numel(gradients[param]))
+                num_adapter += torch.numel(gradients[param])
+                sum_adapter += gradients[param].sum()
+            elif "lora" in param and "lora_A" not in param:
+                total_grad_sum_lora += gradients[param].sum()  # todo: just for checking
+                total_nb_params_lora += torch.numel(gradients[param])  # todo: just for checking
+                print(param, gradients[param].size())
+                num_lora += torch.numel(gradients[param])
+                sum_lora += gradients[param].sum()
+        collect_results[layer]["adapter"] = decimal.Decimal((sum_adapter / num_adapter).item() * adapter_scaling)
+        collect_results[layer]["lora"] = decimal.Decimal((sum_lora / num_lora).item())
+
+    best_module_per_layer = dict()
+    """
+    print("0:")
+    print(collect_results[0])
+    print("1:")
+    print(collect_results[1])
+    print("2:")
+    print(collect_results[2])
+    print("3:")
+    print(collect_results[3])
+    print("4:")
+    print(collect_results[4])
+    print("5:")
+    print(collect_results[5])
+    print("6:")
+    print(collect_results[6])
+    print("7:")
+    print(collect_results[7])
+    print("8:")
+    print(collect_results[8])
+    print("9:")
+    print(collect_results[9])
+    print("10:")
+    print(collect_results[10])
+    print("11:")
+    print(collect_results[11])
+    """
+
+    print("------Evaluation")
+    print("---Prefix")
+    print("Total Sum: ", total_grad_sum_prefix)
+    print("Total Nb Params: ", total_nb_params_prefix)
+    print("Normalized Sum: ", total_grad_sum_prefix/total_nb_params_prefix)
+
+    print("---Adapter")
+    print("Total Sum: ", total_grad_sum_adapter)
+    print("Total Nb Params: ", total_nb_params_adapter)
+    print("Normalized Sum: ", total_grad_sum_adapter / total_nb_params_adapter)
+
+    print("---Lora")
+    print("Total Sum: ", total_grad_sum_lora)
+    print("Total Nb Params: ", total_nb_params_lora)
+    print("Normalized Sum: ", total_grad_sum_lora / total_nb_params_lora)
+
+    for key, mod_values in collect_results.items():
+        item = [sec_key for sec_key, sec_value in mod_values.items() if sec_value == max(mod_values.values())]
+        best_module_per_layer[key] = item[0]
+
+    print(best_module_per_layer)
+
+    return best_module_per_layer
+
+
+def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active):
+    lora_items = [".attention.self.query.lora_B", ".attention.self.value.lora_B",
+                  ".attention.self.query.lora_A", ".attention.self.value.lora_A"]
+    adapter_items = [".output.adapters.mnli.adapter_down.0.weight",
+                     ".output.adapters.mnli.adapter_down.0.bias",
+                     ".output.adapters.mnli.adapter_up.weight",
+                     ".output.adapters.mnli.adapter_up.bias"]
+    prefix_items = ["roberta.encoder.prefix_enc_embed.weight",
+                     "roberta.encoder.prefix_embed_MLP.0.bias",
+                     "roberta.encoder.prefix_embed_MLP.0.weight",
+                     "roberta.encoder.prefix_embed_MLP.2.weight",
+                     "roberta.encoder.prefix_embed_MLP.2.bias"]
+
+    except_para_l = []
+    for k, v in modules_per_layer.items():
+        layer_id = "layer." + str(k)
+        if "lora" in v:
+            for par in lora_items:
+                except_par = layer_id + par
+                except_para_l.append(except_par)
+        elif "adapter" in v:
+            for par in adapter_items:
+                except_par = layer_id + par
+                except_para_l.append(except_par)
+    except_para_l.append("classifier")  # classifier weights are always updated
+    # if active, add prefix tuning params to exclude from freezing
+    if prefix_tuning_active:
+        except_para_l.extend(prefix_items)
+
+    return except_para_l
+
+
+def create_mask_one_module(model, train_dataset, data_collator, num_samples, grad_type="square"):
+    original_device = list(model.parameters())[0].device
+    cuda_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model.to(cuda_device)
+
+    data_loader = DataLoader(
+        train_dataset,
+        batch_size=1,
+        collate_fn=data_collator,
+        shuffle=True
+    )
+
+    importance_method = calculate_the_importance_label  # for small number of labels this one
+
+    # this returns the fish mask
+    gradients = importance_method(model, data_loader, num_samples, cuda_device, grad_type)
+
+    # add sizes and aggregate tensors
+    #sizes = {}
+    #tensors = []
+
+    classifier_size = 0
+    #all_params_size = 0
+
+    classifier_mask_dict = {}
+
+    # todo: my fish mask implementation here
+    modules_per_layer = evaluate_modules_per_layer(gradients)  # evaluate which module is best for which layer
+
+    # get all layers in which prefix module is needed
+    prefix_layers = [k for k, v in modules_per_layer.items() if v == 'prefix']
+    adapter_layers = [k for k, v in modules_per_layer.items() if v == 'adapter']
+    lora_layers = [k for k, v in modules_per_layer.items() if v == 'lora']
+    print("These are the prefix layers: ", prefix_layers)
+    print("These are the adapter layers: ", adapter_layers)
+    print("These are the lora layers: ", lora_layers)
+
+    # set prefix tuning to active if there is a prefix layer, so that gradients are calculated for the prefix params
+    if len(prefix_layers) < 1:
+        prefix_tuning_active = False
+    else:
+        prefix_tuning_active = True
+    # prepare params that should not be freezed
+    except_para_l = prepare_params_to_exclude(modules_per_layer, prefix_tuning_active)
+    #print("Except params: ", except_para_l)
+    freeze_params(model, except_para_l=except_para_l)  # function freezes all params, except the ones in the list
+    #for name, par in model.named_parameters():  # doublecheck
+    #    print(name, par.requires_grad)
+
+
+
+
+    mask_dict = {}
+
+    for k, v in gradients.items():
+        #print("keys in gradients: ", k)
+        # don't count classifier layer, they should be all trainable
+        if "classifier" in k:
+            classifier_size += torch.prod(torch.tensor(v.shape)).item()
+            classifier_mask_dict[k] = torch.ones_like(v).to(original_device)
+        elif "adapter" in k:
+            for layer in adapter_layers:
+                if "layer." + str(layer) + "." in k:  # set to 1 if it is an adapter layer
+                    mask_dict[k] = torch.ones_like(v, device=cuda_device)  # mask for param is added
+                    break
+                else:  # set to 0 if it isn't an adapter layer
+                    mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # mask for param is added
+        elif "lora" in k:
+            for layer in lora_layers:
+                if "layer." + str(layer) + "." in k:
+                    mask_dict[k] = torch.ones_like(v, device=cuda_device)  # mask for param is added
+                    break
+                else:
+                    mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # mask for param is added
+        elif len(prefix_layers) != 0:  # check if there is prefix tuning involved
+            if "roberta.encoder.prefix_embed_MLP.2.weight" not in k and \
+                    "roberta.encoder.prefix_embed_MLP.2.bias" not in k:
+                # prefix params need to be trained, if they occur in any layer
+                mask_dict[k] = torch.ones_like(v, device=cuda_device)  # mask for param is added
+            elif "roberta.encoder.prefix_embed_MLP.2.weight" in k:
+                # reshape tensor so that the correct layers are masked
+                v = torch.zeros_like(v, device=cuda_device)
+                v = v.view(-1, 12 * 2, 12, 64)  # split the weights according to the model implementation
+                v = v.permute([1, 2, 0, 3])
+                v = v.split(2)
+                v = list(v)
+                for layer in prefix_layers:
+                    v[layer] = torch.ones_like(v[layer])  # add 1s for the prefix layers
+                # revert reshaping
+                v = torch.cat(tuple(v))
+                v = v.permute([2, 0, 1, 3])
+                #v = v.reshape(18432, 512)
+                mask_dict[k] = v.reshape(18432, 512)  # mask for param is added
+            elif "roberta.encoder.prefix_embed_MLP.2.bias" in k:
+                # reshape tensor so that the correct layers are masked
+                print("Size of the prefix tuning params before: ", v.size())
+                v = torch.zeros_like(v, device=cuda_device)
+                v = v.view(12 * 2, 12, 64)  # split the bias according to the model implementation
+                v = list(v.split(2))
+                for layer in prefix_layers:
+                    v[layer] = torch.ones_like(v[layer])
+                # revert reshaping
+                v = torch.cat(tuple(v))
+                #v = v.reshape(18432)
+                mask_dict[k] = v.reshape(18432)  # mask for param is added
+                print("Size of the prefix tuning params after: ", mask_dict[k].size())
+        else:
+            #print("Else k's: ", k)
+            mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # add 0s for all other module params,
+            # mask for param is added
+
+    # Add the classifier's mask to mask_dict
+    mask_dict.update(classifier_mask_dict)
+
+    model.to(original_device)
+
+    # Print the parameters for checking
+    """
+    classifier_size = 0
+    all_params_size = 0
+    pretrain_weight_size = 0
+
+    for k, v in mask_dict.items():
+        #print("keys in mask: ", k)
+        #print(v)
+        if "classifier" in k:
+            classifier_size += (v == 1).sum().item()
+        else:
+            pretrain_weight_size += (v == 1).sum().item()
+
+        all_params_size += torch.prod(torch.tensor(v.shape)).item()
+
+    print(pretrain_weight_size, classifier_size, all_params_size)
+    print(f"trainable parameters: {(pretrain_weight_size + classifier_size) / all_params_size * 100} %")
+    """
+
+    return mask_dict
+
+
 def create_mask_random(model, train_dataset, data_collator, num_samples, keep_ratio):
     original_device = list(model.parameters())[0].device
     cuda_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -400,11 +706,13 @@ class SparseUpdateTrainer(Trainer):
         # mask out the gradients
         for name, params in self.model.named_parameters():
             device = params.device
-            self.mask[name] = self.mask[name].to(device)
-
-            params.grad.data.copy_(params.grad.data * self.mask[name].data)
+            if name in self.mask:  # todo: I added this here -> not all params occur in my mask implementation
+                print(name)
+                self.mask[name] = self.mask[name].to(device)
+                params.grad.data.copy_(params.grad.data * self.mask[name].data)
 
         return loss
+
 
 """
 
@@ -437,6 +745,8 @@ class SparseUpdateTrainingArguments(TrainingArguments):
     )
     
 """
+
+
 ##### END OF INSERTION
 
 @dataclass
@@ -463,7 +773,7 @@ class DataTrainingArguments:
         default=128,
         metadata={
             "help": "The maximum total input sequence length after tokenization. Sequences longer "
-            "than this will be truncated, sequences shorter will be padded."
+                    "than this will be truncated, sequences shorter will be padded."
         },
     )
     overwrite_cache: bool = field(
@@ -473,28 +783,28 @@ class DataTrainingArguments:
         default=True,
         metadata={
             "help": "Whether to pad all samples to `max_seq_length`. "
-            "If False, will pad the samples dynamically when batching to the maximum length in the batch."
+                    "If False, will pad the samples dynamically when batching to the maximum length in the batch."
         },
     )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
+                    "value if set."
         },
     )
     max_eval_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
-            "value if set."
+                    "value if set."
         },
     )
     max_predict_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of prediction examples to this "
-            "value if set."
+                    "value if set."
         },
     )
     train_file: Optional[str] = field(
@@ -529,7 +839,7 @@ class DataTrainingArguments:
             assert train_extension in ["csv", "json"], "`train_file` should be a csv or a json file."
             validation_extension = self.validation_file.split(".")[-1]
             assert (
-                validation_extension == train_extension
+                    validation_extension == train_extension
             ), "`validation_file` should have the same extension (csv or json) as `train_file`."
 
 
@@ -543,10 +853,10 @@ class ModelArguments:
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
     ### INSERTED BELOW
-    #model_load_path_second: str = field(
+    # model_load_path_second: str = field(
     #    default="",
     #    metadata={"help": ""}
-    #)
+    # )
     config_name: Optional[str] = field(
         default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
     )
@@ -569,7 +879,7 @@ class ModelArguments:
         default=False,
         metadata={
             "help": "Will use the token generated when running `transformers-cli login` (necessary to use this script "
-            "with private models)."
+                    "with private models)."
         },
     )
     # todo: INSERTED HERE (Unipelt)
@@ -652,9 +962,11 @@ class ModelArguments:
     )
     # todo: END OF INSERTION unipelt
 
+
 # todo INSERTED FROM petl.options
 from dataclasses import dataclass, field
 from typing import Optional
+
 
 @dataclass
 class GenerationArguments:
@@ -696,15 +1008,16 @@ class GenerationArguments:
         },
     )
 
+
 @dataclass
 class TuneArguments:
     attn_mode: Optional[str] = field(
         default="none",
         metadata={
             "choices": ["prefix", "prefix_nomlp",
-            "none", "bitfit", "lora", "adapter",
-            "prompt_tuning"], \
-
+                        "none", "bitfit", "lora", "adapter",
+                        "prompt_tuning"], \
+ \
             "help": "config for attention, none to disable; \
                 prefix: mlp reparameterization to output prefix P; \
                 prefix_nomlp: prefix P as learned params; \
@@ -714,7 +1027,6 @@ class TuneArguments:
                 prompt_tuning: the prompt tuning baseline",
         },
     )
-
 
     attn_option: Optional[str] = field(
         default="concat",
@@ -727,7 +1039,7 @@ class TuneArguments:
                         "parallel",
                         "sequential",
                         ], \
-
+ \
             "help": "specific attn configs; \
                 concat: concat prefix to self, this is prefix tuning baseline; \
                 cross_attn_noln: prefix tuning with vanilla add composition (instead of gated add), \
@@ -765,14 +1077,13 @@ class TuneArguments:
         default="none",
         metadata={
             "choices": ["parallel", "sequential", "pfeiffer", "none"], \
-
+ \
             "help": "specific ffn configs; \
                 parallel: parallel insertion form; \
                 sequential: sequential insertion form; \
                 pfeiffer: the Pfeiffer adapter config"
         },
     )
-
 
     ffn_adapter_layernorm_option: Optional[str] = field(
         default="in",
@@ -800,7 +1111,6 @@ class TuneArguments:
                 set to 'learnable_scalar' to learn this as a parameter"
         },
     )
-
 
     mid_dim: Optional[int] = field(
         default=800,
@@ -838,7 +1148,6 @@ class TuneArguments:
         },
     )
 
-
     load_path: Optional[str] = field(
         default="",
         metadata={
@@ -867,6 +1176,7 @@ class TuneArguments:
             "help": ""
         },
     )
+
 
 # todo: new class here
 @dataclass
@@ -897,6 +1207,7 @@ class SparseUpdateTrainingArguments:
         metadata={"help": "The path for existing training data indices."}
     )
 
+
 @dataclass
 class MBARTArguments:
     """
@@ -916,6 +1227,7 @@ class MBARTArguments:
             "help": ""
         },
     )
+
 
 from dataclasses import dataclass, field
 from typing import Optional
@@ -961,6 +1273,8 @@ class MultiLingAdapterArguments(AdapterArguments):
     lang_adapter_reduction_factor: Optional[int] = field(
         default=None, metadata={"help": "Override the reduction factor of the language model configuration."}
     )
+
+
 # todo END OF INSERTION from petl.options
 
 def main():
@@ -969,20 +1283,20 @@ def main():
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments,
-                               #TuneArguments,
+                               # TuneArguments,
                                SparseUpdateTrainingArguments,
                                MultiLingAdapterArguments))  # todo: added SparseUpdate; Multilingualadapterarguments
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
-        model_args, data_args, training_args, sparse_args, adapter_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
-        #tune_args, \
+        model_args, data_args, training_args, sparse_args, adapter_args = parser.parse_json_file(
+            json_file=os.path.abspath(sys.argv[1]))
+        # tune_args, \
         # todo: adapter_args -> if I don't need multilingual adapters -> I can use model arguments only,
         #  commented out tune_args
     else:
         model_args, data_args, training_args, sparse_args, adapter_args = parser.parse_args_into_dataclasses()
-        #tune_args,
-
+        # tune_args,
 
     # Setup logging
     logging.basicConfig(
@@ -1052,7 +1366,7 @@ def main():
                 train_extension = data_args.train_file.split(".")[-1]
                 test_extension = data_args.test_file.split(".")[-1]
                 assert (
-                    test_extension == train_extension
+                        test_extension == train_extension
                 ), "`test_file` should have the same extension (csv or json) as `train_file`."
                 data_files["test"] = data_args.test_file
             else:
@@ -1255,9 +1569,9 @@ def main():
     # Some models have set the order of the labels to use, so let's make sure we do use it.
     label_to_id = None
     if (
-        model.config.label2id != PretrainedConfig(num_labels=num_labels).label2id
-        and data_args.task_name is not None
-        and not is_regression
+            model.config.label2id != PretrainedConfig(num_labels=num_labels).label2id
+            and data_args.task_name is not None
+            and not is_regression
     ):
         # Some have all caps in their config, some don't.
         label_name_to_id = {k.lower(): v for k, v in model.config.label2id.items()}
@@ -1283,28 +1597,10 @@ def main():
         )
     max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
 
-    # todo: commented out, not needed for unipelt
-    """
-    if tune_args.attn_mode != "none" or tune_args.ffn_mode != "none":
-        if tune_args.load_path == "":
-            model = PETLEncModel(config, tune_args, model)
-        else:
-            model = PETLEncModel.from_pretrained(
-                tune_args.load_path,
-                from_tf=bool(".ckpt" in model_args.model_name_or_path),
-                config=config,
-                cache_dir=model_args.cache_dir,
-                revision=model_args.model_revision,
-                use_auth_token=True if model_args.use_auth_token else None,
-                args=tune_args,
-                pretrained_model=model,
-            )
-    """
-
-    #print(model)
-    for n, p in model.named_parameters():
-        print(n, p.requires_grad)
-    #print("This is the config: ", config)
+    # print(model)
+    # for n, p in model.named_parameters():
+    #    print(n, p.requires_grad)
+    # print("This is the config: ", config)
 
     def preprocess_function(examples):
         # Tokenize the texts
@@ -1378,32 +1674,9 @@ def main():
         data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
     else:
         data_collator = None
-    """
-    if model_args.model_load_path_second != "":
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_args.model_load_path_second,
-            from_tf=bool(".ckpt" in model_args.model_load_path_second),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
-        )
-    """
 
     if sparse_args.normal_training:
 
-        """
-        # Initialize our Trainer
-        trainer = GLUETrainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset if training_args.do_eval else None,
-            compute_metrics=compute_metrics,
-            tokenizer=tokenizer,
-            data_collator=data_collator,
-        )
-        """
         trainer = Trainer(
             model=model,
             args=training_args,
@@ -1414,7 +1687,7 @@ def main():
             data_collator=data_collator,
         )
     else:
-        # TODO###### INSERTION HERE ##############
+        # todo: insertion from Fish mask
         if sparse_args.mask_path != "":
             mask = torch.load(sparse_args.mask_path, map_location="cpu")
         else:
@@ -1430,6 +1703,14 @@ def main():
                 mask = create_mask_random(
                     model, train_dataset, data_collator, sparse_args.num_samples, sparse_args.keep_ratio
                 )
+            # todo: my implementation
+            elif sparse_args.mask_method == "one_module":
+                mask_method = create_mask_one_module
+
+                mask = create_mask_one_module(
+                    model, train_dataset, data_collator, sparse_args.num_samples)
+
+                # print("The size of the tensor: ", tensor.size())
 
             else:
                 sample_type, grad_type = sparse_args.mask_method.split("-")
@@ -1443,8 +1724,9 @@ def main():
                     sample_type,
                     grad_type
                 )
-                # print(mask)
 
+            #print("This is the mask: \n", mask)
+            # todo: This below was commented out also before
                 # def reset_classifier(model):
                 #     for n, p in model.named_parameters():
                 #         if "classifier.weight" in n:
@@ -1455,6 +1737,7 @@ def main():
                 # reset_classifier(model)
 
         # Initialize our Trainer
+        #todo: set up trainer as before
         trainer = SparseUpdateTrainer(
             model=model,
             args=training_args,
@@ -1465,9 +1748,6 @@ def main():
             tokenizer=tokenizer,
             data_collator=data_collator,
         )
-    ############# INSERTION END HERE #################
-
-
 
     # Training
     if training_args.do_train:
@@ -1493,12 +1773,12 @@ def main():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
 
-    #print("After training", model)
-    #for n, _ in model.named_parameters():
-    #    print(n)
-    # todo: inserted
+    print("After training", model)
+    for n, _ in model.named_parameters():
+       print(n)
+    #todo: inserted
     if not sparse_args.normal_training:
-        torch.save(mask, os.path.join(training_args.output_dir, "mask.bin"))  # saves the mask
+       torch.save(mask, os.path.join(training_args.output_dir, "mask.bin"))  # saves the mask
 
     # Evaluation
     if training_args.do_eval:
@@ -1560,6 +1840,7 @@ def main():
 
         trainer.push_to_hub(**kwargs)
     """
+
 
 def _mp_fn(index):
     # For xla_spawn (TPUs)
