@@ -1730,10 +1730,10 @@ def main():
                 mask = create_mask_one_module(
                     model, train_dataset, data_collator, sparse_args.num_samples, data_args.task_name)
                 actual_trained_params = 0
-                #for k, v in mask.items():
-                #    actual_trained_params += v.sum()
-                #    print(k)
-                #    print(v)
+                for k, v in mask.items():
+                    actual_trained_params += v.sum()
+                    print(k)
+                    print(v)
                 print("Nb of trained params: ", actual_trained_params)
 
             else:
@@ -1772,7 +1772,6 @@ def main():
             tokenizer=tokenizer,
             data_collator=data_collator,
         )
-    """
     
     # Training
     if training_args.do_train:
@@ -1858,7 +1857,7 @@ def main():
                             item = label_list[item]
                             writer.write(f"{index}\t{item}\n")
 
-    """
+
 def _mp_fn(index):
     # For xla_spawn (TPUs)
     main()
