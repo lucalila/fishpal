@@ -288,20 +288,20 @@ def evaluate_modules_per_layer(gradients, layers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
                 # print("These are the params in the first if: ", k)
                 total_grad_sum_prefix += v.sum()  # todo: just for checking
                 total_nb_params_prefix += torch.numel(v)  # todo: just for checking
-                print(k, v.size())  # todo: just for checking
+                #print(k, v.size())  # todo: just for checking
                 sum_prefix += v.sum()
                 num_prefix += torch.numel(v)
             elif "roberta.encoder.prefix_embed_MLP.2.weight" == k:
                 total_grad_sum_prefix += v.sum()  # todo: just for checking
                 total_nb_params_prefix += torch.numel(v)  # todo: just for checking
-                print(k, v.size())  # todo: just for checking
+                #print(k, v.size())  # todo: just for checking
                 v = v.view(-1, 12 * 2, 12, 64)  # split the weights according to the model implementation
                 v = v.permute([1, 2, 0, 3])
                 mlp_weights = v.split(2)
             elif "roberta.encoder.prefix_embed_MLP.2.bias" == k:
                 total_grad_sum_prefix += v.sum()  # todo: just for checking
                 total_nb_params_prefix += torch.numel(v)  # todo: just for checking
-                print(k, v.size())  # todo: just for checking
+                #print(k, v.size())  # todo: just for checking
                 v = v.view(12 * 2, 12, 64)
                 mlp_bias = v.split(2)
 
@@ -505,7 +505,7 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
         prefix_tuning_active = True
     # prepare params that should not be freezed
     except_para_l = prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name)
-    #print("Except params: ", except_para_l)
+    print("Except params: ", except_para_l)
     freeze_params(model, except_para_l=except_para_l)  # function freezes all params, except the ones in the list
     #for name, par in model.named_parameters():  # doublecheck
     #    print(name, par.requires_grad)
@@ -524,13 +524,15 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
                     break
                 else:  # set to 0 if it isn't an adapter layer
                     mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # mask for param is added
-        elif "lora" in k:
-            for layer in lora_layers:
-                if "layer." + str(layer) + "." in k:
-                    mask_dict[k] = torch.ones_like(v, device=cuda_device)  # mask for param is added
-                    break
-                else:
-                    mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # mask for param is added
+        elif len(lora_layers) != 0:
+            if "lora" in k:
+                for layer in lora_layers:
+                    if "layer." + str(layer) + "." in k:
+                        mask_dict[k] = torch.ones_like(v, device=cuda_device)  # mask for param is added
+                        break
+                    else:
+                        print("Do I get into the lora else path?")
+                        mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # mask for param is added
         elif len(prefix_layers) != 0:  # check if there is prefix tuning involved
             if "roberta.encoder.prefix_embed_MLP.2.weight" not in k and \
                     "roberta.encoder.prefix_embed_MLP.2.bias" not in k:
@@ -1728,10 +1730,10 @@ def main():
                 mask = create_mask_one_module(
                     model, train_dataset, data_collator, sparse_args.num_samples, data_args.task_name)
                 actual_trained_params = 0
-                for k, v in mask.items():
-                    actual_trained_params += v.sum()
-                    #print(k)
-                    #print(v)
+                #for k, v in mask.items():
+                #    actual_trained_params += v.sum()
+                #    print(k)
+                #    print(v)
                 print("Nb of trained params: ", actual_trained_params)
 
             else:
@@ -1770,6 +1772,7 @@ def main():
             tokenizer=tokenizer,
             data_collator=data_collator,
         )
+    """
     
     # Training
     if training_args.do_train:
@@ -1855,7 +1858,7 @@ def main():
                             item = label_list[item]
                             writer.write(f"{index}\t{item}\n")
 
-
+    """
 def _mp_fn(index):
     # For xla_spawn (TPUs)
     main()
