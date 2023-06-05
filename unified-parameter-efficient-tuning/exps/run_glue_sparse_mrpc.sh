@@ -6,6 +6,7 @@ mask_num_samples=64
 #method="label-square"
 method="one_module"  # custom method my me
 normal_training=False  # must be false if I want to use my method
+special_condition="Adapter_Comparison"
 
 
 export TRANSFORMERS_CACHE=checkpoints/hf_model
@@ -124,7 +125,7 @@ fi
 
 exp_name=glue.${TASK_NAME}.model_${model}.pre_${add_enc_prefix}.lora_${add_lora}.adap_${train_adapter}
 exp_name+=.preg_${add_prefix_gate}.lorag_${add_lora_gate}.adapg_${add_adapter_gate}
-exp_name+=.adapc_${adapter_config}.bsz_${bsz}.epoch_${num_train_epochs}.lr_${lr}
+exp_name+=.adapc_${adapter_config}.bsz_${bsz}.epoch_${num_train_epochs}.lr_${lr}.special_${special_condition}
 
 #exp_name+=.fl_${ffn_adapter_layernorm_option}.finit_${ffn_adapter_init_option}
 #exp_name+=.fs_${ffn_adapter_scalar}.unfrz_${unfreeze}.ne${num_train_epochs}
