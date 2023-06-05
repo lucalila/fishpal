@@ -341,7 +341,7 @@ def evaluate_modules_per_layer(gradients, layers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
             if "adapter" in param:  # and "bias" not in param:
                 total_grad_sum_adapter += gradients[param].sum()  # todo: just for checking
                 total_nb_params_adapter += torch.numel(gradients[param])  # todo: just for checking
-                print(param, gradients[param].size())
+                #print(param, gradients[param].size())
                 #print("Adapter: ", layer, param)
                 #print("Sum: ", gradients[param].sum())
                 #print("Nb: ", torch.numel(gradients[param]))
@@ -350,39 +350,13 @@ def evaluate_modules_per_layer(gradients, layers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
             elif "lora" in param and "lora_A" not in param:
                 total_grad_sum_lora += gradients[param].sum()  # todo: just for checking
                 total_nb_params_lora += torch.numel(gradients[param])  # todo: just for checking
-                print(param, gradients[param].size())
+                #print(param, gradients[param].size())
                 num_lora += torch.numel(gradients[param])
                 sum_lora += gradients[param].sum()
         collect_results[layer]["adapter"] = decimal.Decimal((sum_adapter / num_adapter).item() * adapter_scaling)
         collect_results[layer]["lora"] = decimal.Decimal((sum_lora / num_lora).item())
 
     best_module_per_layer = dict()
-    """
-    print("0:")
-    print(collect_results[0])
-    print("1:")
-    print(collect_results[1])
-    print("2:")
-    print(collect_results[2])
-    print("3:")
-    print(collect_results[3])
-    print("4:")
-    print(collect_results[4])
-    print("5:")
-    print(collect_results[5])
-    print("6:")
-    print(collect_results[6])
-    print("7:")
-    print(collect_results[7])
-    print("8:")
-    print(collect_results[8])
-    print("9:")
-    print(collect_results[9])
-    print("10:")
-    print(collect_results[10])
-    print("11:")
-    print(collect_results[11])
-    """
 
     print("------Evaluation")
     print("---Prefix")
@@ -415,7 +389,12 @@ def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name
                          ".output.adapters.sst2.adapter_down.0.bias",
                          ".output.adapters.sst2.adapter_up.weight",
                          ".output.adapters.sst2.adapter_up.bias"]
-    else:
+    elif task_name == "mrpc":
+        adapter_items = [".output.adapters.mrpc.adapter_down.0.weight",
+                         ".output.adapters.mrpc.adapter_down.0.bias",
+                         ".output.adapters.mrpc.adapter_up.weight",
+                         ".output.adapters.mrpc.adapter_up.bias"]
+    else:  # mnli
         adapter_items = [".output.adapters.mnli.adapter_down.0.weight",
                          ".output.adapters.mnli.adapter_down.0.bias",
                          ".output.adapters.mnli.adapter_up.weight",
@@ -440,7 +419,9 @@ def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name
     except_para_l.append("classifier")  # classifier weights are always updated
     # if active, add prefix tuning params to exclude from freezing
     if prefix_tuning_active:
+        print("yes it is active")
         except_para_l.extend(prefix_items)
+        #print(except_para_l)
 
     return except_para_l
 
@@ -475,6 +456,8 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
     # todo: my fish mask implementation here
     modules_per_layer = evaluate_modules_per_layer(gradients)  # evaluate which module is best for which layer
     print(modules_per_layer)
+    """
+    
     modules_per_layer = {0: 'adapter',
                          1: 'adapter',
                          2: 'adapter',
@@ -487,8 +470,9 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
                          9: 'adapter',
                          10: 'adapter',
                          11: 'adapter'}
-
+            
     print(modules_per_layer)
+    """
 
     # get all layers in which prefix module is needed
     prefix_layers = [k for k, v in modules_per_layer.items() if v == 'prefix']
@@ -505,10 +489,10 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
         prefix_tuning_active = True
     # prepare params that should not be freezed
     except_para_l = prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name)
-    print("Except params: ", except_para_l)
+    #print("Except params: ", except_para_l)
     freeze_params(model, except_para_l=except_para_l)  # function freezes all params, except the ones in the list
-    #for name, par in model.named_parameters():  # doublecheck
-    #    print(name, par.requires_grad)
+    for name, par in model.named_parameters():  # doublecheck
+        print(name, par.requires_grad)
 
     mask_dict = {}
 
@@ -524,16 +508,15 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
                     break
                 else:  # set to 0 if it isn't an adapter layer
                     mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # mask for param is added
-        elif len(lora_layers) != 0:
-            if "lora" in k:
-                for layer in lora_layers:
-                    if "layer." + str(layer) + "." in k:
-                        mask_dict[k] = torch.ones_like(v, device=cuda_device)  # mask for param is added
-                        break
-                    else:
-                        print("Do I get into the lora else path?")
-                        mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # mask for param is added
-        elif len(prefix_layers) != 0:  # check if there is prefix tuning involved
+        elif len(lora_layers) > 0 and "lora" in k:
+            for layer in lora_layers:
+                if "layer." + str(layer) + "." in k:
+                    mask_dict[k] = torch.ones_like(v, device=cuda_device)  # mask for param is added
+                    break
+                else:
+                    #print("Do I get into the lora else path?")
+                    mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # mask for param is added
+        elif len(prefix_layers) > 0 and "prefix" in k:  # check if there is prefix tuning involved
             if "roberta.encoder.prefix_embed_MLP.2.weight" not in k and \
                     "roberta.encoder.prefix_embed_MLP.2.bias" not in k:
                 # prefix params need to be trained, if they occur in any layer
@@ -550,11 +533,13 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
                 # revert reshaping
                 v = torch.cat(tuple(v))
                 v = v.permute([2, 0, 1, 3])
-                #v = v.reshape(18432, 512)
                 mask_dict[k] = v.reshape(18432, 512)  # mask for param is added
+                #print(mask_dict[k])
+                #print("How many 1s in the mask dict - does it make sense for prefix tuning? ", mask_dict[k].sum())
+                #print("How many params in total: ", torch.numel(mask_dict[k]))
             elif "roberta.encoder.prefix_embed_MLP.2.bias" in k:
                 # reshape tensor so that the correct layers are masked
-                print("Size of the prefix tuning params before: ", v.size())
+                #print("Size of the prefix tuning params before: ", v.size())
                 v = torch.zeros_like(v, device=cuda_device)
                 v = v.view(12 * 2, 12, 64)  # split the bias according to the model implementation
                 v = list(v.split(2))
@@ -564,7 +549,7 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
                 v = torch.cat(tuple(v))
                 #v = v.reshape(18432)
                 mask_dict[k] = v.reshape(18432)  # mask for param is added
-                print("Size of the prefix tuning params after: ", mask_dict[k].size())
+                #print("Size of the prefix tuning params after: ", mask_dict[k].size())
         else:
             #print("Else k's: ", k)
             mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # add 0s for all other module params,
@@ -725,49 +710,17 @@ class SparseUpdateTrainer(Trainer):
 
         # mask out the gradients
         for name, params in self.model.named_parameters():
+
             device = params.device
             if name in self.mask:  # todo: I added this here -> not all params occur in my mask implementation
-                #print(name)
+                # print(name, "  - mask")
                 self.mask[name] = self.mask[name].to(device)
                 params.grad.data.copy_(params.grad.data * self.mask[name].data)
+                # print(params.grad.data)
 
         return loss
 
-
-"""
-
-@dataclass
-class SparseUpdateTrainingArguments(TrainingArguments):
-    num_samples: int = field(
-        default=1024,
-        metadata={"help": "The number of samples to compute parameters importance"}
-    )
-    keep_ratio: float = field(
-        default=0.005,
-        metadata={"help": "The trainable parameters to total parameters."}
-    )
-    mask_method: str = field(
-        default="label-absolute",
-        metadata={"help": "The method to select trainable parameters. Format: sample_type-grad_type, \
-                   where sample_type in \{label, expect\}, and grad_type in \{absolute, square\}"}
-    )
-    normal_training: bool = field(
-        default=False,
-        metadata={"help": "Whether to use typical BERT training method."}
-    )
-    mask_path: str = field(
-        default="",
-        metadata={"help": "The path for existing mask."}
-    )
-    data_split_path: str = field(
-        default="",
-        metadata={"help": "The path for existing training data indices."}
-    )
-    
-"""
-
-
-##### END OF INSERTION
+##### END OF FISH INSERTION
 
 @dataclass
 class DataTrainingArguments:
@@ -1305,15 +1258,12 @@ def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments,
                                # TuneArguments,
                                SparseUpdateTrainingArguments,
-                               MultiLingAdapterArguments))  # todo: added SparseUpdate; Multilingualadapterarguments
+                               MultiLingAdapterArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
         model_args, data_args, training_args, sparse_args, adapter_args = parser.parse_json_file(
             json_file=os.path.abspath(sys.argv[1]))
-        # tune_args, \
-        # todo: adapter_args -> if I don't need multilingual adapters -> I can use model arguments only,
-        #  commented out tune_args
     else:
         model_args, data_args, training_args, sparse_args, adapter_args = parser.parse_args_into_dataclasses()
         # tune_args,
@@ -1729,11 +1679,12 @@ def main():
 
                 mask = create_mask_one_module(
                     model, train_dataset, data_collator, sparse_args.num_samples, data_args.task_name)
+                # this is to check how many 1s are in the mask (actual trained params)
                 actual_trained_params = 0
                 for k, v in mask.items():
                     actual_trained_params += v.sum()
-                    print(k)
-                    print(v)
+                    #print(k)
+                    #print(v)
                 print("Nb of trained params: ", actual_trained_params)
 
             else:

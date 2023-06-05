@@ -1,11 +1,11 @@
 #! /bin/bash
 
-# TODO: Fish params
-keep_ratio=0.005
+# Fish implementation params
+keep_ratio=0.005 # todo: this param is not needed, but I did not remove it from the method call yet
 mask_num_samples=64
 #method="label-square"
-method="one_module"  # todo: custom method by me
-normal_training=False
+method="one_module"  # custom method my me
+normal_training=False  # must be false if I want to use my method
 
 
 export TRANSFORMERS_CACHE=checkpoints/hf_model
@@ -25,7 +25,7 @@ export WANDB_WATCH="false"
 DATE=`date +%Y%m%d`
 
 
-seed=42
+seed=88
 # 11, 22, 33, 44, 55, 66, 77, 88, 99 , 111
 # 12, 23, 34, 45, 56, 67, 78, 89, 90, 91
 
@@ -42,7 +42,7 @@ gradient_steps=1
 
 
 model="roberta-base" # todo: roberta-base
-lr=1e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4, Unipelt: 5e-4
+lr=5e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4, Unipelt: 5e-4
 num_train_epochs=10 # todo: 50 for unipelt (7 in fish paper; 10 from He et al.)
 max_seq_length=128
 
