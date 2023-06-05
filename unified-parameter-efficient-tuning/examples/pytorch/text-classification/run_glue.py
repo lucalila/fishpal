@@ -456,6 +456,7 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
     # todo: my fish mask implementation here
     modules_per_layer = evaluate_modules_per_layer(gradients)  # evaluate which module is best for which layer
     print(modules_per_layer)
+    """
     
     modules_per_layer = {0: 'adapter',
                          1: 'adapter',
@@ -471,6 +472,7 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
                          11: 'adapter'}
             
     print(modules_per_layer)
+    """
 
     # get all layers in which prefix module is needed
     prefix_layers = [k for k, v in modules_per_layer.items() if v == 'prefix']
