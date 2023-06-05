@@ -26,7 +26,7 @@ export WANDB_WATCH="false"
 DATE=`date +%Y%m%d`
 
 
-seed=88
+seed=42
 # 11, 22, 33, 44, 55, 66, 77, 88, 99 , 111
 # 12, 23, 34, 45, 56, 67, 78, 89, 90, 91
 
@@ -43,7 +43,7 @@ gradient_steps=1
 
 
 model="roberta-base" # todo: roberta-base
-lr=5e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4, Unipelt: 5e-4
+lr=1e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4, Unipelt: 5e-4
 num_train_epochs=10 # todo: 50 for unipelt (7 in fish paper; 10 from He et al.)
 max_seq_length=128
 
