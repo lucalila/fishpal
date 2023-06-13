@@ -821,9 +821,16 @@ class ModelArguments:
     """
     Arguments pertaining to which model/config/tokenizer we are going to fine-tune from.
     """
+    load_adapter_config: bool = field(
+        metadata={"help": "Whether the model is saved normally of with adapter config separately"}
+    )
 
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
+    model_load_path_adapter: str = field(
+        default="",
+        metadata={"help": ""}
     )
     ### INSERTED BELOW
     # model_load_path_second: str = field(
@@ -1435,6 +1442,49 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
+
+    config = AutoConfig.from_pretrained(
+        model_args.config_name if model_args.config_name else model_args.model_name_or_path,
+        num_labels=num_labels,
+        finetuning_task=data_args.task_name,
+        cache_dir=model_args.cache_dir,
+        revision=model_args.model_revision,
+        use_auth_token=True if model_args.use_auth_token else None,
+    )
+
+    #if model_args.load_adapter_config:
+    #     # todo: first load pre-trained roberta,
+    # model = AutoModelForSequenceClassification.from_pretrained(
+    #     model_args.model_name_or_path,
+    #     from_tf=bool(".ckpt" in model_args.model_name_or_path),
+    #     config=config,
+    #     cache_dir=model_args.cache_dir,
+    #     revision=model_args.model_revision,
+    #     use_auth_token=True if model_args.use_auth_token else None,
+    # )
+    # # todo: then add pre-trained adapter to it
+    # model_adapter.load_adapter(model_args.model_load_path_adapter)
+    #else:
+        # # todo: regular loading
+        # print("Do I get here?")
+        # config = AutoConfig.from_pretrained(
+        #     model_args.config_name if model_args.config_name else model_args.model_load_path_adapter,
+        #     num_labels=num_labels,
+        #     finetuning_task=data_args.task_name,
+        #     cache_dir=model_args.cache_dir,
+        #     revision=model_args.model_revision,
+        #     use_auth_token=True if model_args.use_auth_token else None,
+        # )
+        #
+        # model = AutoModelForSequenceClassification.from_pretrained(
+        #     model_args.model_name_or_path,
+        #     from_tf=bool(".ckpt" in model_args.model_load_path_adapter),
+        #     config=config_adapter,
+        #     cache_dir=model_args.cache_dir,
+        #     revision=model_args.model_revision,
+        #     use_auth_token=True if model_args.use_auth_token else None,
+        # )
+
     model = AutoModelForSequenceClassification.from_pretrained(
         model_args.model_name_or_path,
         from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -1655,6 +1705,8 @@ def main():
             compute_metrics=compute_metrics,
             tokenizer=tokenizer,
             data_collator=data_collator,
+            do_save_full_model=True,  # otherwise, P in AP may not be saved
+            do_save_adapters=adapter_args.train_adapter
         )
     else:
         # todo: insertion from Fish mask
@@ -1722,6 +1774,8 @@ def main():
             compute_metrics=compute_metrics,
             tokenizer=tokenizer,
             data_collator=data_collator,
+            do_save_full_model=True,  # otherwise, P in AP may not be saved
+            do_save_adapters=adapter_args.train_adapter
         )
     
     # Training
