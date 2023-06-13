@@ -25,7 +25,7 @@ export WANDB_WATCH="false"
 DATE=`date +%Y%m%d`
 
 
-seed=222
+seed=88
 # 11, 22, 33, 44, 55, 66, 77, 88, 99 , 111
 # 12, 23, 34, 45, 56, 67, 78, 89, 90, 91
 
@@ -42,6 +42,7 @@ gradient_steps=1
 
 
 model="roberta-base" # todo: roberta-base
+model_adapter="/Users/lauraluckert/param-efficient-fine-tuning-fish/unified-parameter-efficient-tuning/examples/pytorch/text-classification/mnli_my_model"
 lr=5e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4, Unipelt: 5e-4
 num_train_epochs=10 # todo: 50 for unipelt (7 in fish paper; 10 from He et al.)
 max_seq_length=128
@@ -141,10 +142,12 @@ rm checkpoints/hf_model/*.lock
 
 # roberta-base
 python -u examples/pytorch/text-classification/run_glue.py \
+    --load_adapter_config True \
     --model_name_or_path ${model} \
+    --model_load_path_adapter ${model_adapter} \
     --task_name $TASK_NAME \
     --do_train True \
-    --do_eval False\
+    --do_eval False \
     --do_predict False \
     --num_samples ${mask_num_samples} \
     --keep_ratio ${keep_ratio} \
