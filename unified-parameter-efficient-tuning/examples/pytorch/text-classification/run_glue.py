@@ -459,17 +459,17 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
 
     
     modules_per_layer = {0: 'prefix',
-                         1: 'adapter',
-                         2: 'lora',
-                         3: 'lora',
-                         4: 'adapter',
+                         1: 'prefix',
+                         2: 'prefix',
+                         3: 'prefix',
+                         4: 'prefix',
                          5: 'adapter',
                          6: 'adapter',
                          7: 'adapter',
                          8: 'adapter',
                          9: 'adapter',
-                         10: 'lora',
-                         11: 'lora'}
+                         10: 'adapter',
+                         11: 'adapter'}
             
     print(modules_per_layer)
 
