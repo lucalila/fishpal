@@ -296,8 +296,13 @@ def evaluate_modules_per_layer(gradients, layers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
                 total_nb_params_prefix += torch.numel(v)  # todo: just for checking
                 #print(k, v.size())  # todo: just for checking
                 v = v.view(-1, 12 * 2, 12, 64)  # split the weights according to the model implementation
+                print("This is the size of v: ", v.size())
                 v = v.permute([1, 2, 0, 3])
+                print("This is the permuted size of v: ", v.size())
                 mlp_weights = v.split(2)
+                print("This is the length of MLP weights: ", len(mlp_weights))
+                for i in mlp_weights:
+                    print("These are the new weight elements shape: ", i.size())
             elif "roberta.encoder.prefix_embed_MLP.2.bias" == k:
                 total_grad_sum_prefix += v.sum()  # todo: just for checking
                 total_nb_params_prefix += torch.numel(v)  # todo: just for checking
@@ -381,7 +386,7 @@ def evaluate_modules_per_layer(gradients, layers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
     return best_module_per_layer
 
 
-def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name):
+def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name, classifier_training_active=True):
     lora_items = [".attention.self.query.lora_B", ".attention.self.value.lora_B",
                   ".attention.self.query.lora_A", ".attention.self.value.lora_A"]
     if task_name == "sst2":
@@ -416,17 +421,19 @@ def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name
             for par in adapter_items:
                 except_par = layer_id + par
                 except_para_l.append(except_par)
-    except_para_l.append("classifier")  # classifier weights are always updated
-    # if active, add prefix tuning params to exclude from freezing
-    if prefix_tuning_active:
+    if classifier_training_active: # per default classifier weights are updated
+        except_para_l.append("classifier")
+    if prefix_tuning_active: # if active, add prefix tuning params to exclude from freezing
         print("yes it is active")
         except_para_l.extend(prefix_items)
-        #print(except_para_l)
 
     return except_para_l
 
 
-def create_mask_one_module(model, train_dataset, data_collator, num_samples, task_name, grad_type="square"):
+def create_mask_one_module(model, train_dataset, data_collator, num_samples, task_name,
+                           grad_type="square",
+                           classifier_training_active=False):
+    print("Classifier training is active? ", classifier_training_active)
     original_device = list(model.parameters())[0].device
     cuda_device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -444,35 +451,31 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
     # this returns the fish mask
     gradients = importance_method(model, data_loader, num_samples, cuda_device, grad_type)
 
-    # add sizes and aggregate tensors
-    #sizes = {}
-    #tensors = []
-
     classifier_size = 0
-    #all_params_size = 0
 
     classifier_mask_dict = {}
 
-    # todo: my fish mask implementation here
-    modules_per_layer = evaluate_modules_per_layer(gradients)  # evaluate which module is best for which layer
-    print(modules_per_layer)
+    # FishSCALP implementation here
+    # todo: comment in for evaluation, not needed atm, config is known
+    #modules_per_layer = evaluate_modules_per_layer(gradients)  # evaluate which module is best for which layer
+    #print(modules_per_layer)
 
-    
+    # todo: hard-coded final config to run experiments per task
+    # mrpc combination
     modules_per_layer = {0: 'prefix',
-                         1: 'prefix',
-                         2: 'prefix',
-                         3: 'prefix',
-                         4: 'prefix',
+                         1: 'adapter',
+                         2: 'lora',
+                         3: 'lora',
+                         4: 'adapter',
                          5: 'adapter',
                          6: 'adapter',
                          7: 'adapter',
                          8: 'adapter',
                          9: 'adapter',
-                         10: 'adapter',
-                         11: 'adapter'}
+                         10: 'lora',
+                         11: 'lora'}
             
     print(modules_per_layer)
-
 
     # get all layers in which prefix module is needed
     prefix_layers = [k for k, v in modules_per_layer.items() if v == 'prefix']
@@ -487,9 +490,13 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
         prefix_tuning_active = False
     else:
         prefix_tuning_active = True
-    # prepare params that should not be freezed
-    except_para_l = prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name)
-    #print("Except params: ", except_para_l)
+    # prepare params that should not be frozen
+    # todo: experiment with frozen classifier layer
+    except_para_l = prepare_params_to_exclude(modules_per_layer,
+                                              prefix_tuning_active,
+                                              task_name,
+                                              classifier_training_active)
+    # print("Except params: ", except_para_l)
     freeze_params(model, except_para_l=except_para_l)  # function freezes all params, except the ones in the list
     for name, par in model.named_parameters():  # doublecheck
         print(name, par.requires_grad)
@@ -497,7 +504,7 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
     mask_dict = {}
 
     for k, v in gradients.items():
-        # don't count classifier layer, they should be all trainable
+        # comment from fish: don't count classifier layer, they should be all trainable
         if "classifier" in k:
             classifier_size += torch.prod(torch.tensor(v.shape)).item()
             classifier_mask_dict[k] = torch.ones_like(v).to(original_device)
@@ -514,7 +521,7 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
                     mask_dict[k] = torch.ones_like(v, device=cuda_device)  # mask for param is added
                     break
                 else:
-                    #print("Do I get into the lora else path?")
+                    # print("Do I get into the lora else path?")
                     mask_dict[k] = torch.zeros_like(v, device=cuda_device)  # mask for param is added
         elif len(prefix_layers) > 0 and "prefix" in k:  # check if there is prefix tuning involved
             if "roberta.encoder.prefix_embed_MLP.2.weight" not in k and \
@@ -556,7 +563,9 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
             # mask for param is added
 
     # Add the classifier's mask to mask_dict
-    mask_dict.update(classifier_mask_dict)
+    # todo: do not add the classifier mask, if classifier training is set to false
+    if classifier_training_active:
+        mask_dict.update(classifier_mask_dict)
 
     model.to(original_device)
 
@@ -1255,15 +1264,12 @@ class MultiLingAdapterArguments(AdapterArguments):
     )
 
 
-# todo END OF INSERTION from petl.options
-
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments,
-                               # TuneArguments,
                                SparseUpdateTrainingArguments,
                                MultiLingAdapterArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
@@ -1425,14 +1431,7 @@ def main():
         config.drop_first_prefix_layers_dec = list(range(model_args.drop_first_layers - num_layers))
         config.drop_first_prefix_layers_cross = list(range(model_args.drop_first_layers - num_layers))
     # todo: INSERTION END unipelt
-    # put useful args into config: these arguments will be used in models, thus adding them to config
-    # interested_args = ['use_prefix', 'mid_dim', 'preseqlen', 'prefix_dropout', 'unfreeze_params']
-    # todo: commented out - tune args not required for unipelt
-    """
-    for k, v in vars(tune_args).items():
-        if not hasattr(config, k):
-            setattr(config, k, v)
-    """
+
     setattr(training_args, 'max_tokens_per_batch', data_args.max_tokens_per_batch)
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -1775,9 +1774,11 @@ def main():
             tokenizer=tokenizer,
             data_collator=data_collator,
             do_save_full_model=True,  # otherwise, P in AP may not be saved
-            do_save_adapters=adapter_args.train_adapter
         )
-    
+
+    for k, v in model.named_parameters():
+        print(k)
+        print(v.size())
     # Training
     if training_args.do_train:
         checkpoint = None

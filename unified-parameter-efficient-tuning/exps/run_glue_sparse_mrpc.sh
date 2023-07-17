@@ -4,9 +4,9 @@
 keep_ratio=0.005 # todo: this param is not needed, but I did not remove it from the method call yet
 mask_num_samples=64
 #method="label-square"
-method="one_module"  # custom method my me
-normal_training=False  # must be false if I want to use my method
-special_condition=""
+method="one_module"  # custom method my me; one_module = FishSCALP
+normal_training=False  # must be false if FishSCALP should be used
+special_condition="classifier_not_trained"
 
 
 export TRANSFORMERS_CACHE=checkpoints/hf_model
@@ -26,7 +26,7 @@ export WANDB_WATCH="false"
 DATE=`date +%Y%m%d`
 
 
-seed=11
+seed=22
 # 11, 22, 33, 44, 55, 66, 77, 88, 99 , 111
 # 12, 23, 34, 45, 56, 67, 78, 89, 90, 91
 
