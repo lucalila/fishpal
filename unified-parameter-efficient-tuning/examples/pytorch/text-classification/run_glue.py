@@ -432,7 +432,7 @@ def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name
 
 def create_mask_one_module(model, train_dataset, data_collator, num_samples, task_name,
                            grad_type="square",
-                           classifier_training_active=False):
+                           classifier_training_active=True):
     print("Classifier training is active? ", classifier_training_active)
     original_device = list(model.parameters())[0].device
     cuda_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -467,6 +467,20 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
                          2: 'lora',
                          3: 'lora',
                          4: 'adapter',
+                         5: 'adapter',
+                         6: 'adapter',
+                         7: 'adapter',
+                         8: 'adapter',
+                         9: 'adapter',
+                         10: 'lora',
+                         11: 'lora'}
+
+    # sst2 combination
+    modules_per_layer = {0: 'prefix',
+                         1: 'prefix',
+                         2: 'prefix',
+                         3: 'prefix',
+                         4: 'prefix',
                          5: 'adapter',
                          6: 'adapter',
                          7: 'adapter',
