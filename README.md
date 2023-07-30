@@ -37,7 +37,7 @@ In the experiments of this thesis, FishPAL consistently outperforms the baseline
 ### FishPAL
 * exps/run_glue_sparse_sst2.sh (Seeds: 111, 11, 22)
 * exps/run_glue_sparse_mnli.sh (Seeds: 11, 22, 88)
-* exps/run_glue_sparse_mrpc.sh (Seeds: 11, 22, 88)
+* exps/run_glue_sparse_mrpc.sh (Seeds: 11, 22, 88) xx
 
 ## Notes:
 All experiments were run on 1 Google Cloud GPU (NVIDIA T4 GPU with 4vCPUs and 15GB
