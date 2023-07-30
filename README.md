@@ -30,14 +30,14 @@ In the experiments of this thesis, FishPAL consistently outperforms the baseline
 * exps/run_glue_lora.sh (SST-2)
 * exps/run_glue_lora_mnli.sh 
 * exps/run_glue_lora_mrpc.sh
-#### Prefix-Tuning
+##### Prefix-Tuning
 * exps/run_glue_prefix.sh (SST-2)
 * exps/run_glue_prefix_mnli.sh
 * exps/run_glue_prefix_mrpc.sh
 ### FishPAL
 * exps/run_glue_sparse_sst2.sh (Seeds: 111, 11, 22)
 * exps/run_glue_sparse_mnli.sh (Seeds: 11, 22, 88)
-* exps/run_glue_sparse_mrpc.sh (Seeds: 11, 22, 88) xx
+* exps/run_glue_sparse_mrpc.sh (Seeds: 11, 22, 88)
 
 ## Notes:
 All experiments were run on 1 Google Cloud GPU (NVIDIA T4 GPU with 4vCPUs and 15GB
