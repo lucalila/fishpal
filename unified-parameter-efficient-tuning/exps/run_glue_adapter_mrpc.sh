@@ -1,23 +1,10 @@
 #! /bin/bash
-#SBATCH --output=slurm_logs/slurm-%A-%a.out
-#SBATCH --error=slurm_logs/slurm-%A-%a.err
-#SBATCH --job-name=glue
-#SBATCH --nodes=1
-#SBATCH --gres=gpu:3090:1
-#SBATCH --mem=16g
-#SBATCH --cpus-per-task=4
-#SBATCH --time=0
-#SBATCH --array=0-4%5
 
+keep_ratio=0.005  # not used for normal_training = True
+mask_num_samples=1024  # not used for normal_training = True
+method="label-square" # not used for normal_training = True
+normal_training=True
 
-#datasets=$1 # we use $TASK_NAME instead
-#seed=$2 # we use seed in this script
-# TODO: Insertion from fish
-keep_ratio=0.005  # Todo: Integrate below, new param
-mask_num_samples=1024  # Todo: integrate below, new param
-method="label-square" # Todo: integrate below, new param
-normal_training=True  # todo: normally set to false to trigger sparse updates
-# TODO: END insertion from fish
 
 
 export TRANSFORMERS_CACHE=checkpoints/hf_model
@@ -40,20 +27,18 @@ DATE=`date +%Y%m%d`
 seed=42
 
 
-# set to 1 for debug mode which only
-# uses 1600 training examples
-debug=0  # OK  #todo: set to 1 for trials
+debug=0
 
-# set to "wandb" to use weights & bias
-report_to="none" # this is just a visualization tool
 
-bsz=16  # 2 for lmu gpus, orig 16
+report_to="none"
+
+bsz=16
 gradient_steps=1
 
 
-model="roberta-base" # todo: roberta-base
-lr=1e-4 # todo: Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4
-num_train_epochs=10 # todo: 50 for unipelt (7 in fish paper; 10 from He et al.)
+model="roberta-base"
+lr=1e-4 # Adapter: 1e-4; Lora: 5e-4; Prefix: 2e-4
+num_train_epochs=10
 max_seq_length=128
 
 max_grad_norm=1  # OK (this is the default from huggingface)
@@ -64,15 +49,15 @@ max_steps=-1  # OK (this is the default from huggingface and overwritten from ep
 max_tokens_per_batch=0  #
 #max_train_samples=100 # ADJUSTED -> 500, 1000, all # K = {100, 500, 1000 , all} from paper, all has the best performance (from unipelt)
 
-lr_scheduler_type="polynomial"  # OK (this is from He et al.)
+lr_scheduler_type="polynomial"
 unfreeze='ef_'
 max_eval_samples=1600 # OK
 logging_steps=50 # OK
 
-eval_strategy="epoch" # OK - same for fish mask
-save_steps=5000 # OK
+eval_strategy="epoch"
+save_steps=5000
 
-### UNIPELT params ##########
+
 # set to True for Prefix
 add_enc_prefix=False
 add_dec_prefix=False
@@ -94,7 +79,6 @@ add_adapter_gate=False  # ONLY ADAPTER BASELINE HERE
 add_prefix_gate=False  # ONLY ADAPTER BASELINE HERE
 add_lora_gate=False  # ONLY ADAPTER BASELINE HERE
 add_central_gate=False
-# set to True for adapters -> what about the bottleneck dim? -> check model.config.adapters
 train_adapter=True  # ONLY ADAPTER BASELINE HERE
 #load_adapter
 adapter_config=pfeiffer  # default is pfeiffer
@@ -106,11 +90,9 @@ lang_adapter_config=None
 lang_adapter_non_linearity=None
 lang_adapter_reduction_factor=None
 early_stopping_patience=10
-##### UNIPELT END #######
 
 
 extra-cmd=""
-#extra_cmd="--max_train_samples ${max_train_samples}"  # ADJUSTED
 debug_str=""
 
 # this is only for debugging
@@ -136,8 +118,7 @@ exp_name=glue.${TASK_NAME}.model_${model}.pre_${add_enc_prefix}.lora_${add_lora}
 exp_name+=.preg_${add_prefix_gate}.lorag_${add_lora_gate}.adapg_${add_adapter_gate}
 exp_name+=.adapc_${adapter_config}.bsz_${bsz}.epoch_${num_train_epochs}.lr_${lr}
 
-#exp_name+=.fl_${ffn_adapter_layernorm_option}.finit_${ffn_adapter_init_option}
-#exp_name+=.fs_${ffn_adapter_scalar}.unfrz_${unfreeze}.ne${num_train_epochs}
+
 exp_name+=.seed_${seed}.${debug_str}
 SAVE=checkpoints/glue/${TASK_NAME}/${DATE}/${exp_name}
 echo "${SAVE}"
@@ -147,14 +128,13 @@ rm checkpoints/hf_model/downloads/*.lock
 rm checkpoints/hf_model/*.lock
 
 
-# python -m torch.distributed.launch --nproc_per_node 2 --master_port=${port} examples/pytorch/text-classification/run_glue.py \
 
 # roberta-base
 python -u examples/pytorch/text-classification/run_glue.py \
     --model_name_or_path ${model} \
     --task_name $TASK_NAME \
-    --do_train True \
-    --do_eval False\
+    --do_train False \
+    --do_eval True \
     --do_predict False \
     --num_samples ${mask_num_samples} \
     --keep_ratio ${keep_ratio} \
@@ -185,6 +165,7 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --train_adapter ${train_adapter} \
     --early_stopping_patience ${early_stopping_patience} \
     --seed ${seed} \
+    --fp16 \
     --max_eval_samples ${max_eval_samples} \
     --gradient_accumulation_steps ${gradient_steps} \
     --max_steps ${max_steps} \
@@ -195,7 +176,6 @@ python -u examples/pytorch/text-classification/run_glue.py \
     --weight_decay ${weight_decay} \
     --warmup_steps ${warmup_updates} \
     --warmup_ratio ${warmup_ratio} \
-    --fp16 \
     --max_seq_length ${max_seq_length} \
     --logging_steps ${logging_steps} \
     --save_total_limit 2 \
@@ -215,11 +195,6 @@ python -u examples/pytorch/text-classification/run_glue.py \
         2>&1 | tee ${SAVE}/log.txt
 
 
-## Todo: comment fp16 in for gpu usage
-## no     --fp16 \
+## comment fp16 in for gpu usage
+#    --fp16 \
 
-# persist results on cloud bucket
-#echo "Now we start saving"
-#echo $PWD
-#gsutil cp -r ./checkpoints gs://omega-portal-383613-param-efficient-fine-tuning/checkpoints
-# done
