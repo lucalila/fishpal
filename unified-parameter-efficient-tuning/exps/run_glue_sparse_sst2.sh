@@ -6,7 +6,7 @@ mask_num_samples=64
 #method="label-square"
 method="one_module"  # custom method FishPAL
 normal_training=False
-special_condition="rerun_seed_111"
+special_condition=""
 
 
 export TRANSFORMERS_CACHE=checkpoints/hf_model
@@ -26,7 +26,7 @@ export WANDB_WATCH="false"
 DATE=`date +%Y%m%d`
 
 
-seed=111
+seed=88
 # 11, 22, 33, 44, 55, 66, 77, 88, 99 , 111
 # 12, 23, 34, 45, 56, 67, 78, 89, 90, 91
 
