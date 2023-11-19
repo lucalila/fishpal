@@ -423,7 +423,7 @@ def prepare_params_to_exclude(modules_per_layer, prefix_tuning_active, task_name
 
 def create_mask_one_module(model, train_dataset, data_collator, num_samples, task_name,
                            grad_type="square",
-                           classifier_training_active=True):
+                           classifier_training_active=False):
     """
     The best module per layer is selected based on the Fisher information matrix,
     the respective mask for the selected combination is set up
