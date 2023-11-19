@@ -25,6 +25,7 @@ export WANDB_WATCH="false"
 
 DATE=`date +%Y%m%d`
 
+bsz=16
 
 seed=88
 # 11, 22, 33, 44, 55, 66, 77, 88, 99 , 111
