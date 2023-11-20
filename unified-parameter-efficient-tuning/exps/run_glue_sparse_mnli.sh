@@ -140,7 +140,6 @@ rm checkpoints/hf_model/*.lock
 python -u examples/pytorch/text-classification/run_glue.py \
     --load_adapter_config True \
     --model_name_or_path ${model} \
-    --model_load_path_adapter ${model_adapter} \
     --task_name $TASK_NAME \
     --do_train True \
     --do_eval False \
