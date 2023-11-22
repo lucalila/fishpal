@@ -458,8 +458,55 @@ def create_mask_one_module(model, train_dataset, data_collator, num_samples, tas
 
     classifier_mask_dict = {}
 
-    # FishSCALP implementation here
-    modules_per_layer = evaluate_modules_per_layer(gradients)  # evaluate which module is best for which layer
+    # FishPAL implementation here
+    #modules_per_layer = evaluate_modules_per_layer(gradients)  # evaluate which module is best for which layer
+    #print(modules_per_layer)
+
+    # fixation of best combination per task
+
+    if task_name == "mrpc":
+
+        modules_per_layer = {0: 'prefix',
+                             1: 'adapter',
+                             2: 'lora',
+                             3: 'lora',
+                             4: 'adapter',
+                             5: 'adapter',
+                             6: 'adapter',
+                             7: 'adapter',
+                             8: 'adapter',
+                             9: 'adapter',
+                             10: 'lora',
+                             11: 'lora'}
+    elif task_name == "mnli":
+
+        modules_per_layer = {0: 'prefix',
+                             1: 'adapter',
+                             2: 'lora',
+                             3: 'lora',
+                             4: 'adapter',
+                             5: 'adapter',
+                             6: 'adapter',
+                             7: 'adapter',
+                             8: 'adapter',
+                             9: 'adapter',
+                             10: 'lora',
+                             11: 'lora'}
+    elif task_name == "sst2":
+
+        modules_per_layer = {0: 'prefix',
+                             1: 'prefix',
+                             2: 'prefix',
+                             3: 'prefix',
+                             4: 'prefix',
+                             5: 'adapter',
+                             6: 'adapter',
+                             7: 'adapter',
+                             8: 'adapter',
+                             9: 'adapter',
+                             10: 'lora',
+                             11: 'lora'}
+
     print(modules_per_layer)
 
     # get all layers in which prefix module is needed
