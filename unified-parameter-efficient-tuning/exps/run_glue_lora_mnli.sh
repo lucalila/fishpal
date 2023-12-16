@@ -24,7 +24,7 @@ export WANDB_WATCH="false"
 DATE=`date +%Y%m%d`
 
 
-seed=111
+seed=33
 
 
 
