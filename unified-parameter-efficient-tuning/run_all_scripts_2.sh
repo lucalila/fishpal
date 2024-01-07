@@ -1,6 +1,6 @@
 #!/bin/sh
 
-for f in exps/*.sh; do
+for f in exps/mrpc/*.sh; do
   if [ "$f" == "$0" ]; then
     continue
   else
